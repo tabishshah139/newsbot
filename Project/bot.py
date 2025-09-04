@@ -1,3 +1,4 @@
+# final bot.py (with full music system)
 import os
 import re
 import asyncio
@@ -5,18 +6,30 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
+import yt_dlp
 
 # Load env variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")  # Added for guild-specific sync
+GUILD_ID = os.getenv("GUILD_ID")  # optional: fast guild sync
 
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 client = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------- Cache ----------
+# ---------- Music Data Structures ----------
+music_queues = {}       # {guild_id: [ {title, url, requester, effect} ]}
+now_playing = {}        # {guild_id: {title, url, requester, effect}}
+loop_flags = {}         # {guild_id: bool}
+volumes = {}            # {guild_id: float}  (0.0 - 2.0)
+ffmpeg_base_opts = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn"
+}
+
+# ---------- General Cache ----------
 recent_channels = {}  # {user_id: {guild_id: [channel_ids]}}
 
 def update_recent_channel(user_id: int, guild_id: int, channel_id: int):
@@ -45,6 +58,132 @@ def parse_message_link(link: str):
     if not match:
         return None
     return match.group(1), match.group(2), match.group(3)
+
+async def ensure_voice_connected(interaction: discord.Interaction):
+    """Ensure bot is connected to user's voice channel. Returns voice_client or None."""
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("❌ Pehle VC join karo Jaani!", ephemeral=True)
+        return None
+    channel = interaction.user.voice.channel
+    vc = interaction.guild.voice_client
+    if vc is None:
+        try:
+            vc = await channel.connect()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Could not join VC: {e}", ephemeral=True)
+            return None
+    else:
+        # If connected somewhere else, try to move
+        if vc.channel.id != channel.id:
+            try:
+                await vc.move_to(channel)
+            except Exception:
+                pass
+    return vc
+
+def ytdl_get_info(query: str):
+    """Return (stream_url, title) or raise Exception."""
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'source_address': '0.0.0.0',
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        # Accept either URL or search query
+        try:
+            info = ydl.extract_info(query, download=False)
+        except Exception as e:
+            # try searching
+            search = f"ytsearch:{query}"
+            info = ydl.extract_info(search, download=False)
+            if not info or 'entries' not in info or len(info['entries']) == 0:
+                raise e
+            info = info['entries'][0]
+        # info may be the video dict
+        # Some extractors provide 'url' or require using formats
+        stream_url = info.get('url')
+        if not stream_url:
+            formats = info.get('formats')
+            if not formats:
+                raise RuntimeError("No playable formats found.")
+            stream_url = formats[-1]['url']
+        title = info.get('title', 'Unknown Title')
+        return stream_url, title
+
+def build_ffmpeg_options(effect: str = None):
+    opts = ffmpeg_base_opts.copy()
+    if effect:
+        # simple supported effects mapping
+        if effect == "bass":
+            af = "bass=g=10"
+        elif effect == "lofi":
+            # lowpass + slight reverb-ish effect as simple lofi
+            af = "lowpass=f=8000,asetrate=44100*0.8"
+        else:
+            af = None
+        if af:
+            # append audio filter to options
+            opts = opts.copy()
+            # options string - include -af
+            opts["options"] = f"-vn -af \"{af}\""
+    return opts
+
+# ---------- Music Playback Flow ----------
+async def play_next_in_queue(guild_id: int):
+    """Coroutine to pop next entry and start playback. Called internally."""
+    queue = music_queues.get(guild_id, [])
+    vc = None
+    guild = client.get_guild(guild_id)
+    if not guild:
+        return
+    vc = guild.voice_client
+    if loop_flags.get(guild_id) and now_playing.get(guild_id):
+        # loop current song
+        entry = now_playing[guild_id]
+    else:
+        if not queue:
+            now_playing.pop(guild_id, None)
+            # if nothing left, disconnect after a short delay
+            if vc and not vc.is_playing():
+                try:
+                    await asyncio.sleep(3)
+                    if vc and not vc.is_playing():
+                        await vc.disconnect()
+                except Exception:
+                    pass
+            return
+        entry = queue.pop(0)
+        music_queues[guild_id] = queue
+
+    # prepare ffmpeg source
+    stream_url = entry['url']
+    effect = entry.get('effect')
+    ff_opts = build_ffmpeg_options(effect)
+    source = discord.FFmpegPCMAudio(stream_url, **ff_opts)
+    volume = volumes.get(guild_id, 0.25)
+    player = discord.PCMVolumeTransformer(source, volume=volume)
+
+    def after_play(error):
+        # schedule next in event loop
+        fut = asyncio.run_coroutine_threadsafe(play_next_in_queue(guild_id), client.loop)
+        try:
+            fut.result()
+        except Exception:
+            pass
+
+    try:
+        if not vc:
+            # try to connect to a voice channel if possible (do nothing if not)
+            # cannot know which channel — expect already connected
+            return
+        vc.play(player, after=after_play)
+        now_playing[guild_id] = entry
+    except Exception as e:
+        # try to notify a channel: find last requester channel via guild system channel
+        now_playing.pop(guild_id, None)
+        print(f"[Music] play error in guild {guild_id}: {e}")
 
 # ---------- Autocomplete ----------
 async def channel_autocomplete(interaction: discord.Interaction, current: str):
@@ -138,54 +277,132 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="Music", value="/play, /pause, /resume, /stop, /skip, /queue, /nowplaying, /loop, /clearlist, /volume, /effect", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------- MUSIC PLACEHOLDER ----------
-@client.tree.command(name="play", description="Play a song from YouTube")
-async def play(interaction: discord.Interaction, query: str):
-    await interaction.response.send_message(f"🎵 Searching: {query}", ephemeral=True)
+# ---------- MUSIC COMMANDS ----------
+@client.tree.command(name="play", description="Play a song from YouTube (name or url)")
+async def play(interaction: discord.Interaction, query: str, effect: str = ""):
+    await interaction.response.defer(ephemeral=False)
+    vc = await ensure_voice_connected(interaction)
+    if not vc:
+        return
+    guild_id = interaction.guild.id
+    try:
+        stream_url, title = ytdl_get_info(query)
+    except Exception as e:
+        return await interaction.followup.send(f"❌ Could not find/play: {e}")
+
+    entry = {"title": title, "url": stream_url, "requester": interaction.user.display_name, "effect": effect or None}
+    music_queues.setdefault(guild_id, []).append(entry)
+
+    # auto-start if nothing playing
+    guild_vc = interaction.guild.voice_client
+    if not guild_vc or not guild_vc.is_playing():
+        await play_next_in_queue(guild_id)
+        await interaction.followup.send(f"▶️ Now playing **{title}** — requested by {entry['requester']}")
+    else:
+        await interaction.followup.send(f"➕ Queued **{title}** — position {len(music_queues[guild_id])}")
 
 @client.tree.command(name="pause", description="Pause current song")
 async def pause(interaction: discord.Interaction):
-    await interaction.response.send_message("⏸️ Song paused", ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_playing():
+        return await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+    vc.pause()
+    await interaction.response.send_message("⏸️ Paused", ephemeral=True)
 
 @client.tree.command(name="resume", description="Resume paused song")
 async def resume(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_paused():
+        return await interaction.response.send_message("❌ Nothing is paused.", ephemeral=True)
+    vc.resume()
     await interaction.response.send_message("▶️ Resumed", ephemeral=True)
 
-@client.tree.command(name="stop", description="Stop playing music")
+@client.tree.command(name="stop", description="Stop playback and clear queue")
 async def stop(interaction: discord.Interaction):
-    await interaction.response.send_message("⏹️ Music stopped", ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc:
+        return await interaction.response.send_message("❌ I'm not connected to a VC.", ephemeral=True)
+    # stop and clear
+    try:
+        vc.stop()
+    except Exception:
+        pass
+    music_queues.pop(interaction.guild.id, None)
+    now_playing.pop(interaction.guild.id, None)
+    try:
+        await vc.disconnect()
+    except Exception:
+        pass
+    await interaction.response.send_message("⏹️ Stopped and cleared queue.", ephemeral=True)
 
 @client.tree.command(name="skip", description="Skip current song")
 async def skip(interaction: discord.Interaction):
-    await interaction.response.send_message("⏭️ Skipped", ephemeral=True)
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_playing():
+        return await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+    vc.stop()
+    await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
 
 @client.tree.command(name="queue", description="Show music queue")
-async def queue(interaction: discord.Interaction):
-    await interaction.response.send_message("🎶 Queue: [placeholder]", ephemeral=True)
+async def queue_cmd(interaction: discord.Interaction):
+    q = music_queues.get(interaction.guild.id, [])
+    if not q and not now_playing.get(interaction.guild.id):
+        return await interaction.response.send_message("🎶 Queue is empty.", ephemeral=True)
+    lines = []
+    current = now_playing.get(interaction.guild.id)
+    if current:
+        lines.append(f"▶️ Now: **{current['title']}** — requested by {current['requester']}")
+    for i, e in enumerate(q[:10], start=1):
+        lines.append(f"{i}. {e['title']} — {e['requester']}")
+    await interaction.response.send_message("🎶\n" + "\n".join(lines), ephemeral=True)
 
 @client.tree.command(name="nowplaying", description="Show current song")
-async def nowplaying(interaction: discord.Interaction):
-    await interaction.response.send_message("🎧 Now playing: [placeholder]", ephemeral=True)
+async def nowplaying_cmd(interaction: discord.Interaction):
+    current = now_playing.get(interaction.guild.id)
+    if not current:
+        return await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+    await interaction.response.send_message(f"🎧 Now playing: **{current['title']}** — requested by {current['requester']}", ephemeral=True)
 
 @client.tree.command(name="loop", description="Loop the current song (admin only)")
-async def loop(interaction: discord.Interaction):
+async def loop_cmd(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Only admins can loop.", ephemeral=True)
-    await interaction.response.send_message("🔁 Loop enabled", ephemeral=True)
+        return await interaction.response.send_message("❌ Only admins can toggle loop.", ephemeral=True)
+    gid = interaction.guild.id
+    loop_flags[gid] = not loop_flags.get(gid, False)
+    await interaction.response.send_message(f"🔁 Loop set to {loop_flags[gid]}", ephemeral=True)
 
 @client.tree.command(name="clearlist", description="Clear the music queue (admin only)")
 async def clearlist(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Only admins can clear queue.", ephemeral=True)
+    music_queues.pop(interaction.guild.id, None)
     await interaction.response.send_message("🗑️ Queue cleared", ephemeral=True)
 
-@client.tree.command(name="volume", description="Change music volume")
-async def volume(interaction: discord.Interaction, level: int):
+@client.tree.command(name="volume", description="Change music volume (0-200)")
+async def volume_cmd(interaction: discord.Interaction, level: int):
+    if level < 0 or level > 200:
+        return await interaction.response.send_message("❌ Volume must be 0-200.", ephemeral=True)
+    gid = interaction.guild.id
+    volumes[gid] = max(0.0, min(level / 100.0, 2.0))
+    vc = interaction.guild.voice_client
+    if vc and vc.source and isinstance(vc.source, discord.PCMVolumeTransformer):
+        vc.source.volume = volumes[gid]
     await interaction.response.send_message(f"🔊 Volume set to {level}%", ephemeral=True)
 
-@client.tree.command(name="effect", description="Add sound effect like reverb/lofi")
-async def effect(interaction: discord.Interaction, effect: str):
-    await interaction.response.send_message(f"✨ Effect applied: {effect}", ephemeral=True)
+@client.tree.command(name="effect", description="Apply simple audio effect to queued song (e.g. bass, lofi)")
+async def effect_cmd(interaction: discord.Interaction, effect: str):
+    # This command sets the effect to apply to the next queued song (for simplicity)
+    # Accepts 'bass' or 'lofi'
+    valid = {"bass", "lofi"}
+    if effect not in valid:
+        return await interaction.response.send_message("❌ Supported effects: bass, lofi", ephemeral=True)
+    gid = interaction.guild.id
+    q = music_queues.setdefault(gid, [])
+    if not q:
+        return await interaction.response.send_message("❌ Queue empty — add a song first.", ephemeral=True)
+    # apply effect to last queued song (most recent added)
+    q[-1]['effect'] = effect
+    await interaction.response.send_message(f"✨ Effect '{effect}' applied to queued song **{q[-1]['title']}**", ephemeral=True)
 
 # ---------- DEBUG SYNC ----------
 @client.tree.command(name="sync", description="Manually resync commands (Admin only)")
@@ -216,7 +433,6 @@ async def on_ready():
             print(f"🌍 Globally synced {len(synced)} commands")
     except Exception as e:
         print(f"❌ Sync error: {e}")
-
     print(f"✅ Logged in as {client.user}")
 
 client.run(TOKEN)
