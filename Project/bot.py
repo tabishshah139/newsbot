@@ -9,11 +9,7 @@ from dotenv import load_dotenv
 # Load env variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-# Optional fast sync to a specific server (guild)
-# Put your server ID in env as GUILD_ID
-GUILD_ID_ENV = os.getenv("GUILD_ID")
-GUILD_ID = int(GUILD_ID_ENV) if GUILD_ID_ENV and GUILD_ID_ENV.isdigit() else None
+GUILD_ID = os.getenv("GUILD_ID")  # Added for guild-specific sync
 
 # Bot setup
 intents = discord.Intents.default()
@@ -96,7 +92,7 @@ async def embed(interaction: discord.Interaction, channel_id: str, title: str, d
     channel = await client.fetch_channel(int(channel_id))
     try:
         col = discord.Color(int(color.replace("#", ""), 16))
-    except Exception:
+    except:
         col = discord.Color.blurple()
     e = discord.Embed(title=title, description=description, color=col)
     if url:
@@ -191,20 +187,33 @@ async def volume(interaction: discord.Interaction, level: int):
 async def effect(interaction: discord.Interaction, effect: str):
     await interaction.response.send_message(f"✨ Effect applied: {effect}", ephemeral=True)
 
+# ---------- DEBUG SYNC ----------
+@client.tree.command(name="sync", description="Manually resync commands (Admin only)")
+async def sync_commands(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Only admins can sync.", ephemeral=True)
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            synced = await client.tree.sync(guild=guild)
+            await interaction.response.send_message(f"✅ Resynced {len(synced)} commands.", ephemeral=True)
+        else:
+            synced = await client.tree.sync()
+            await interaction.response.send_message(f"🌍 Globally resynced {len(synced)} commands.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Sync failed: {e}", ephemeral=True)
+
 # ---------- Events ----------
 @client.event
 async def on_ready():
     try:
-        # 1) Fast guild sync so commands instantly appear in your server
         if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            synced_guild = await client.tree.sync(guild=guild)
-            print(f"✅ Synced {len(synced_guild)} commands to guild {GUILD_ID}")
-
-        # 2) (Optional) Also push global sync for all servers
-        synced_global = await client.tree.sync()
-        print(f"🌍 Synced {len(synced_global)} global commands")
-
+            guild = discord.Object(id=int(GUILD_ID))
+            synced = await client.tree.sync(guild=guild)
+            print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}")
+        else:
+            synced = await client.tree.sync()
+            print(f"🌍 Globally synced {len(synced)} commands")
     except Exception as e:
         print(f"❌ Sync error: {e}")
 
