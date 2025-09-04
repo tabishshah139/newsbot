@@ -11,17 +11,10 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 APP_ID = os.getenv("APPLICATION_ID")
 
-# Bot setup with intents
+# Bot setup
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+intents.message_content = True  # warning hatane k liye
 client = commands.Bot(command_prefix="!", intents=intents)
-
-# ---------- Permission Check ----------
-def is_admin():
-    async def predicate(interaction: discord.Interaction) -> bool:
-        return interaction.user.guild_permissions.administrator
-    return app_commands.check(predicate)
 
 # ---------- Helper Functions ----------
 def format_content(content: str, bold: bool, underline: bool, code_lang: str):
@@ -40,22 +33,45 @@ def parse_message_link(link: str):
     return match.group(1), match.group(2), match.group(3)
 
 # ---------- Slash Commands ----------
-@client.tree.command(name="say", description="Send formatted message to a channel")
-@is_admin()
-async def say(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,   # dropdown selector
-    content: str,
-    bold: bool = False,
-    underline: bool = False,
-    code_lang: str = "",
-    typing_ms: int = 0
-):
-    # Prevent cross-server messaging
-    if channel.guild.id != interaction.guild_id:
-        return await interaction.response.send_message(
-            "❌ Cross-server messaging not allowed.", ephemeral=True
-        )
+@client.tree.command(name="ping", description="Check if bot is alive")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong! 🏓 Bot is alive ✅", ephemeral=True)
+
+@client.tree.command(name="help", description="Show all available commands")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📖 Bot Commands Help",
+        description="Here are the available commands:",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(
+        name="/ping",
+        value="Check if the bot is alive (anyone can use).",
+        inline=False
+    )
+    embed.add_field(
+        name="/say",
+        value="(Admin only) Send a formatted message to a selected channel.\n"
+              "**Options:** channel, content, bold, underline, code_lang, typing_ms",
+        inline=False
+    )
+    embed.add_field(
+        name="/embed",
+        value="(Admin only) Send an embed message with title, description, color, and URL.",
+        inline=False
+    )
+    embed.add_field(
+        name="/edit",
+        value="(Admin only) Edit an existing bot message using its link.",
+        inline=False
+    )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@client.tree.command(name="say", description="Send formatted message to channel")
+async def say(interaction: discord.Interaction, channel: discord.TextChannel, content: str, bold: bool=False, underline: bool=False, code_lang: str="", typing_ms: int=0):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
     await interaction.response.send_message("Sending...", ephemeral=True)
     if typing_ms > 0:
@@ -65,20 +81,10 @@ async def say(
     sent = await channel.send(final)
     await interaction.edit_original_response(content=f"Sent ✅ ({sent.jump_url})")
 
-@client.tree.command(name="embed", description="Send embed message to a channel")
-@is_admin()
-async def embed(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,   # dropdown selector
-    title: str,
-    description: str,
-    color: str = "#5865F2",
-    url: str = ""
-):
-    if channel.guild.id != interaction.guild_id:
-        return await interaction.response.send_message(
-            "❌ Cross-server messaging not allowed.", ephemeral=True
-        )
+@client.tree.command(name="embed", description="Send embed message")
+async def embed(interaction: discord.Interaction, channel: discord.TextChannel, title: str, description: str, color: str="#5865F2", url: str=""):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
     await interaction.response.send_message("Sending embed...", ephemeral=True)
     try:
@@ -92,53 +98,34 @@ async def embed(
     await interaction.edit_original_response(content=f"Embed sent ✅ ({sent.jump_url})")
 
 @client.tree.command(name="edit", description="Edit existing message with link")
-@is_admin()
-async def edit(
-    interaction: discord.Interaction,
-    message_link: str,
-    new_content: str,
-    bold: bool = False,
-    underline: bool = False,
-    code_lang: str = ""
-):
+async def edit(interaction: discord.Interaction, message_link: str, new_content: str, bold: bool=False, underline: bool=False, code_lang: str=""):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
+
     parsed = parse_message_link(message_link)
     if not parsed:
         return await interaction.response.send_message("❌ Invalid message link.", ephemeral=True)
-
     guild_id, channel_id, msg_id = parsed
-    channel = await client.fetch_channel(int(channel_id))
-    if channel.guild.id != interaction.guild_id:
-        return await interaction.response.send_message(
-            "❌ You can only edit messages inside this server.", ephemeral=True
-        )
+    if str(interaction.guild_id) != guild_id:
+        return await interaction.response.send_message("❌ You cannot edit messages outside this server.", ephemeral=True)
 
+    channel = await client.fetch_channel(int(channel_id))
     msg = await channel.fetch_message(int(msg_id))
     final = format_content(new_content, bold, underline, code_lang)
     await msg.edit(content=final)
     await interaction.response.send_message("Edited ✅", ephemeral=True)
 
-# ---------- Sync Command ----------
-@client.tree.command(name="sync", description="(Admin) Sync commands to this guild or globally")
-@is_admin()
-async def sync_cmd(interaction: discord.Interaction, scope: str = "guild"):
-    await interaction.response.send_message("🔄 Syncing commands...", ephemeral=True)
-    if scope == "global":
-        await client.tree.sync()
-        await interaction.followup.send("🌍 Global sync complete (may take time).", ephemeral=True)
-    else:
-        await client.tree.sync(guild=interaction.guild)
-        await interaction.followup.send("✅ Guild sync complete.", ephemeral=True)
-
 # ---------- Events ----------
 @client.event
 async def on_ready():
-    for guild in client.guilds:
-        try:
-            await client.tree.sync(guild=discord.Object(id=guild.id))
-            print(f"✅ Synced commands to guild {guild.name} ({guild.id})")
-        except Exception as e:
-            print(f"❌ Failed syncing {guild.id}: {e}")
+    # Purane commands clear karke naye sync karna
+    try:
+        client.tree.clear_commands(guild=None)   # Clear all global commands
+        await client.tree.sync(guild=None)       # Resync global commands
+        print(f"✅ Commands cleared & synced globally for {client.user}")
+    except Exception as e:
+        print(f"⚠️ Sync failed: {e}")
 
-    print(f"🤖 Logged in as {client.user}")
+    print(f"✅ Logged in as {client.user}")
 
 client.run(TOKEN)
