@@ -45,11 +45,7 @@ async def help_command(interaction: discord.Interaction):
         description="Here are the available commands:",
         color=discord.Color.blurple()
     )
-    embed.add_field(
-        name="/ping",
-        value="Check if the bot is alive (anyone can use).",
-        inline=False
-    )
+    embed.add_field(name="/ping", value="Check if the bot is alive (anyone can use).", inline=False)
     embed.add_field(
         name="/say",
         value="(Admin only) Send a formatted message to a selected channel.\n"
@@ -97,15 +93,26 @@ async def say(
 # Autocomplete for channel selection
 @say.autocomplete("channel")
 async def channel_autocomplete(interaction: discord.Interaction, current: str):
-    channels = [c for c in interaction.guild.text_channels if c.permissions_for(interaction.user).send_messages]
-    results = []
-    for c in channels[:30]:  # sirf 30 channels tak
-        results.append(app_commands.Choice(name=c.name, value=str(c.id)))
+    channels = [
+        c for c in interaction.guild.text_channels
+        if c.permissions_for(interaction.user).send_messages
+    ]
+    results = [
+        app_commands.Choice(name=c.name, value=str(c.id))
+        for c in channels if current.lower() in c.name.lower()
+    ][:15]  # 👈 max 15 results
     return results
 
 # Embed command
 @client.tree.command(name="embed", description="Send embed message")
-async def embed(interaction: discord.Interaction, channel: str, title: str, description: str, color: str="#5865F2", url: str=""):
+async def embed(
+    interaction: discord.Interaction,
+    channel: str,
+    title: str,
+    description: str,
+    color: str="#5865F2",
+    url: str=""
+):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
@@ -126,15 +133,26 @@ async def embed(interaction: discord.Interaction, channel: str, title: str, desc
 # Autocomplete for embed channel
 @embed.autocomplete("channel")
 async def embed_channel_autocomplete(interaction: discord.Interaction, current: str):
-    channels = [c for c in interaction.guild.text_channels if c.permissions_for(interaction.user).send_messages]
-    results = []
-    for c in channels[:30]:
-        results.append(app_commands.Choice(name=c.name, value=str(c.id)))
+    channels = [
+        c for c in interaction.guild.text_channels
+        if c.permissions_for(interaction.user).send_messages
+    ]
+    results = [
+        app_commands.Choice(name=c.name, value=str(c.id))
+        for c in channels if current.lower() in c.name.lower()
+    ][:15]  # 👈 max 15 results
     return results
 
 # Edit command
 @client.tree.command(name="edit", description="Edit existing message with link")
-async def edit(interaction: discord.Interaction, message_link: str, new_content: str, bold: bool=False, underline: bool=False, code_lang: str=""):
+async def edit(
+    interaction: discord.Interaction,
+    message_link: str,
+    new_content: str,
+    bold: bool=False,
+    underline: bool=False,
+    code_lang: str=""
+):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
