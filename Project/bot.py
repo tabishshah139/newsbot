@@ -11,8 +11,9 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 APP_ID = os.getenv("APPLICATION_ID")
 
-# Bot setup
+# Bot setup with intents
 intents = discord.Intents.default()
+intents.message_content = True   # ✅ fix: allow reading message content
 client = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- Cache (per user, max 30 channels) ----------
@@ -133,6 +134,11 @@ async def recent(interaction: discord.Interaction):
             names.append(f"⭐ {ch.mention}")
     embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ---------- Text Command Example ----------
+@client.command()
+async def ping(ctx):
+    await ctx.send(f"🏓 Pong! Latency: {round(client.latency * 1000)}ms")
 
 # ---------- Events ----------
 @client.event
