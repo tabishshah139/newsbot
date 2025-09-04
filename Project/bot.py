@@ -6,15 +6,35 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
-# Load .env file
+# Load .env (locally use hota hai, Railway me zaroori nahi but safe hai)
 load_dotenv()
+
+# -------- ENV VARIABLES --------
 TOKEN = os.getenv("DISCORD_TOKEN")
 APP_ID = os.getenv("APPLICATION_ID")
-GUILD_ID = int(os.getenv("GUILD_ID"))  # 👈 apna server ID .env me daalna hoga
+GUILD_ID = os.getenv("GUILD_ID")
 
-# Bot setup
+print("DEBUG ENV:", {
+    "DISCORD_TOKEN": TOKEN,
+    "APPLICATION_ID": APP_ID,
+    "GUILD_ID": GUILD_ID
+})
+
+if not TOKEN:
+    raise ValueError("❌ DISCORD_TOKEN missing in Railway environment!")
+if not APP_ID:
+    raise ValueError("❌ APPLICATION_ID missing in Railway environment!")
+if not GUILD_ID:
+    raise ValueError("❌ GUILD_ID missing in Railway environment!")
+
+try:
+    GUILD_ID = int(GUILD_ID.strip())
+except Exception as e:
+    raise ValueError(f"❌ GUILD_ID must be a number, got: {GUILD_ID!r}") from e
+
+# -------- BOT SETUP --------
 intents = discord.Intents.default()
-intents.message_content = True  # warning hatane k liye
+intents.message_content = True
 client = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- Helper Functions ----------
@@ -45,7 +65,11 @@ async def help_command(interaction: discord.Interaction):
         description="Here are the available commands:",
         color=discord.Color.blurple()
     )
-    embed.add_field(name="/ping", value="Check if the bot is alive (anyone can use).", inline=False)
+    embed.add_field(
+        name="/ping",
+        value="Check if the bot is alive (anyone can use).",
+        inline=False
+    )
     embed.add_field(
         name="/say",
         value="(Admin only) Send a formatted message to a selected channel.\n"
@@ -69,7 +93,7 @@ async def help_command(interaction: discord.Interaction):
 @client.tree.command(name="say", description="Send formatted message to channel")
 async def say(
     interaction: discord.Interaction,
-    channel: str,  # 👈 ab yahan string (channel id) aayegi
+    channel: str,
     content: str,
     bold: bool=False,
     underline: bool=False,
@@ -90,13 +114,12 @@ async def say(
     sent = await channel_obj.send(final)
     await interaction.edit_original_response(content=f"Sent ✅ ({sent.jump_url})")
 
-# Autocomplete for /say command
+# Autocomplete for /say
 @say.autocomplete("channel")
 async def channel_autocomplete(interaction: discord.Interaction, current: str):
     try:
-        if not interaction.guild:  # Agar DM hai
+        if not interaction.guild:
             return []
-
         channels = [
             c for c in interaction.guild.text_channels
             if c.permissions_for(interaction.user).send_messages
@@ -104,7 +127,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
         results = [
             app_commands.Choice(name=c.name, value=str(c.id))
             for c in channels if current.lower() in c.name.lower()
-        ][:15]  # max 15 results
+        ][:15]
         return results
     except Exception as e:
         print(f"⚠️ Autocomplete error (/say): {e}")
@@ -112,14 +135,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
 
 # Embed command
 @client.tree.command(name="embed", description="Send embed message")
-async def embed(
-    interaction: discord.Interaction,
-    channel: str,
-    title: str,
-    description: str,
-    color: str="#5865F2",
-    url: str=""
-):
+async def embed(interaction: discord.Interaction, channel: str, title: str, description: str, color: str="#5865F2", url: str=""):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
@@ -137,13 +153,12 @@ async def embed(
     sent = await channel_obj.send(embed=e)
     await interaction.edit_original_response(content=f"Embed sent ✅ ({sent.jump_url})")
 
-# Autocomplete for /embed command
+# Autocomplete for /embed
 @embed.autocomplete("channel")
 async def embed_channel_autocomplete(interaction: discord.Interaction, current: str):
     try:
         if not interaction.guild:
             return []
-
         channels = [
             c for c in interaction.guild.text_channels
             if c.permissions_for(interaction.user).send_messages
@@ -159,14 +174,7 @@ async def embed_channel_autocomplete(interaction: discord.Interaction, current: 
 
 # Edit command
 @client.tree.command(name="edit", description="Edit existing message with link")
-async def edit(
-    interaction: discord.Interaction,
-    message_link: str,
-    new_content: str,
-    bold: bool=False,
-    underline: bool=False,
-    code_lang: str=""
-):
+async def edit(interaction: discord.Interaction, message_link: str, new_content: str, bold: bool=False, underline: bool=False, code_lang: str=""):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
@@ -179,10 +187,6 @@ async def edit(
 
     channel = await client.fetch_channel(int(channel_id))
     msg = await channel.fetch_message(int(msg_id))
-
-    if msg.author.id != client.user.id:
-        return await interaction.response.send_message("❌ I can only edit my own messages.", ephemeral=True)
-
     final = format_content(new_content, bold, underline, code_lang)
     await msg.edit(content=final)
     await interaction.response.send_message("Edited ✅", ephemeral=True)
@@ -192,8 +196,8 @@ async def edit(
 async def on_ready():
     try:
         guild = discord.Object(id=GUILD_ID)
-        client.tree.clear_commands(guild=guild)   # sirf is server ke liye clear
-        await client.tree.sync(guild=guild)       # sirf is server ke liye sync
+        client.tree.clear_commands(guild=guild)
+        await client.tree.sync(guild=guild)
         print(f"✅ Commands synced for guild {GUILD_ID}")
     except Exception as e:
         print(f"⚠️ Sync failed: {e}")
