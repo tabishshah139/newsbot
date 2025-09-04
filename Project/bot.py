@@ -1,6 +1,3 @@
-# ==========================
-# Importing libraries
-# ==========================
 import os
 import re
 import asyncio
@@ -9,38 +6,45 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 import yt_dlp
-from collections import deque
+from yt_dlp.utils import DownloadError
 
-# ==========================
-# Load ENV variables
-# ==========================
+# Load env variables
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = os.getenv("GUILD_ID")  # optional: fast guild sync
 
-# ==========================
-# Setup
-# ==========================
+# Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 client = commands.Bot(command_prefix="!", intents=intents)
 
-# ==========================
-# Music system cache
-# ==========================
-SONG_QUEUES = {}  # {guild_id: deque of (url, title)}
+# ---------- Music Data Structures ----------
+music_queues = {}       # {guild_id: [ {title, url, requester, effect} ]}
+now_playing = {}        # {guild_id: {title, url, requester, effect}}
+loop_flags = {}         # {guild_id: bool}
+volumes = {}            # {guild_id: float}  (0.0 - 2.0)
 
-# yt-dlp async helper
-async def search_ytdlp_async(query, ydl_opts):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: _extract(query, ydl_opts))
+ffmpeg_base_opts = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn"
+}
 
-def _extract(query, ydl_opts):
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(query, download=False)
+# ---------- General Cache ----------
+recent_channels = {}  # {user_id: {guild_id: [channel_ids]}}
 
-# ==========================
-# Helper: format text
-# ==========================
+def update_recent_channel(user_id: int, guild_id: int, channel_id: int):
+    if user_id not in recent_channels:
+        recent_channels[user_id] = {}
+    if guild_id not in recent_channels[user_id]:
+        recent_channels[user_id][guild_id] = []
+    if channel_id in recent_channels[user_id][guild_id]:
+        recent_channels[user_id][guild_id].remove(channel_id)
+    recent_channels[user_id][guild_id].insert(0, channel_id)
+    if len(recent_channels[user_id][guild_id]) > 30:
+        recent_channels[user_id][guild_id].pop()
+
+# ---------- Helpers ----------
 def format_content(content: str, bold: bool, underline: bool, code_lang: str):
     if code_lang:
         return f"```{code_lang}\n{content}\n```"
@@ -56,27 +60,172 @@ def parse_message_link(link: str):
         return None
     return match.group(1), match.group(2), match.group(3)
 
-# ==========================
-# Autocomplete for channels
-# ==========================
-recent_channels = {}
-def update_recent_channel(user_id: int, guild_id: int, channel_id: int):
-    if user_id not in recent_channels:
-        recent_channels[user_id] = {}
-    if guild_id not in recent_channels[user_id]:
-        recent_channels[user_id][guild_id] = []
-    if channel_id in recent_channels[user_id][guild_id]:
-        recent_channels[user_id][guild_id].remove(channel_id)
-    recent_channels[user_id][guild_id].insert(0, channel_id)
-    if len(recent_channels[user_id][guild_id]) > 30:
-        recent_channels[user_id][guild_id].pop()
+async def ensure_voice_connected(interaction: discord.Interaction):
+    """Ensure bot is connected to user's voice channel. Returns voice_client or None."""
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("❌ Pehle VC join karo Jaani!", ephemeral=True)
+        return None
+    channel = interaction.user.voice.channel
+    vc = interaction.guild.voice_client
+    if vc is None:
+        try:
+            vc = await channel.connect()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Could not join VC: {e}", ephemeral=True)
+            return None
+    else:
+        # If connected somewhere else, try to move
+        if vc.channel.id != channel.id:
+            try:
+                await vc.move_to(channel)
+            except Exception:
+                pass
+    return vc
 
+def ytdl_get_info(query: str):
+    """
+    Try to get a playable stream URL and title for the given query or url.
+    - First tries the query/url directly.
+    - On failure (non-auth), tries ytsearch and returns top result.
+    - If the extractor complains about sign-in / age restriction, raises RuntimeError("AGE_RESTRICTED").
+    - If nothing found, raises RuntimeError("NOT_FOUND").
+    """
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'source_address': '0.0.0.0',
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        # 1) try direct (url or query)
+        try:
+            info = ydl.extract_info(query, download=False)
+        except DownloadError as e:
+            err = str(e)
+            # Detect age-restricted / sign-in required messages from yt-dlp
+            if "Sign in to confirm" in err or "sign in to confirm" in err.lower() or "age-restricted" in err.lower():
+                raise RuntimeError("AGE_RESTRICTED") from e
+            # otherwise try a search fallback
+            try:
+                search = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                entries = search.get('entries')
+                if not entries:
+                    raise RuntimeError("NOT_FOUND")
+                info = entries[0]
+            except Exception:
+                raise RuntimeError("NOT_FOUND") from e
+        except Exception:
+            # other unexpected errors: try search as well
+            try:
+                search = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                entries = search.get('entries')
+                if not entries:
+                    raise RuntimeError("NOT_FOUND")
+                info = entries[0]
+            except Exception as e:
+                raise RuntimeError("NOT_FOUND") from e
+
+        # If we got a playlist/search result, normalize to single video dict
+        if isinstance(info, dict) and 'entries' in info and info['entries']:
+            info = info['entries'][0]
+
+        # Try to find a direct stream url in info
+        stream_url = info.get('url')
+        if not stream_url:
+            formats = info.get('formats') or []
+            if not formats:
+                raise RuntimeError("NOT_FOUND")
+            # pick the best audio-like format (usually last is best)
+            stream_url = formats[-1].get('url')
+
+        title = info.get('title', 'Unknown Title')
+        return stream_url, title
+
+def build_ffmpeg_options(effect: str = None):
+    opts = ffmpeg_base_opts.copy()
+    if effect:
+        # simple supported effects mapping
+        if effect == "bass":
+            af = "bass=g=10"
+        elif effect == "lofi":
+            af = "lowpass=f=8000,asetrate=44100*0.8"
+        else:
+            af = None
+        if af:
+            opts = opts.copy()
+            # include audio filter
+            opts["options"] = f"-vn -af \"{af}\""
+    return opts
+
+async def play_next_in_queue(guild_id: int):
+    """Pop next entry and start playback. Called internally."""
+    queue = music_queues.get(guild_id, [])
+    guild = client.get_guild(guild_id)
+    if not guild:
+        return
+    vc = guild.voice_client
+
+    if loop_flags.get(guild_id) and now_playing.get(guild_id):
+        # loop current song (do not pop)
+        entry = now_playing[guild_id]
+    else:
+        if not queue:
+            now_playing.pop(guild_id, None)
+            # disconnect if idle
+            if vc and not vc.is_playing():
+                try:
+                    await asyncio.sleep(3)
+                    if vc and not vc.is_playing():
+                        await vc.disconnect()
+                except Exception:
+                    pass
+            return
+        entry = queue.pop(0)
+        music_queues[guild_id] = queue
+
+    stream_url = entry['url']
+    effect = entry.get('effect')
+    ff_opts = build_ffmpeg_options(effect)
+    try:
+        source = discord.FFmpegPCMAudio(stream_url, **ff_opts)
+    except Exception as e:
+        # if ffmpeg cannot open, skip to next
+        print(f"[Music] FFmpeg error for guild {guild_id}: {e}")
+        now_playing.pop(guild_id, None)
+        await play_next_in_queue(guild_id)
+        return
+
+    volume = volumes.get(guild_id, 0.25)
+    player = discord.PCMVolumeTransformer(source, volume=volume)
+
+    def after_play(error):
+        if error:
+            print(f"[Music] playback error in guild {guild_id}: {error}")
+        fut = asyncio.run_coroutine_threadsafe(play_next_in_queue(guild_id), client.loop)
+        try:
+            fut.result()
+        except Exception:
+            pass
+
+    try:
+        if not vc:
+            # nothing to do if no voice client (should normally be connected)
+            return
+        vc.play(player, after=after_play)
+        now_playing[guild_id] = entry
+    except Exception as e:
+        now_playing.pop(guild_id, None)
+        print(f"[Music] play error in guild {guild_id}: {e}")
+
+# ---------- Autocomplete ----------
 async def channel_autocomplete(interaction: discord.Interaction, current: str):
     choices = []
     guild = interaction.guild
     user_id = interaction.user.id
     if not guild:
         return []
+    # recent channels
     if user_id in recent_channels and guild.id in recent_channels[user_id]:
         for cid in recent_channels[user_id][guild.id][:10]:
             channel = guild.get_channel(cid)
@@ -84,6 +233,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
                 choices.append(app_commands.Choice(
                     name=f"⭐ {channel.name}", value=str(channel.id)
                 ))
+    # normal channels
     for channel in guild.text_channels:
         if current.lower() in channel.name.lower():
             choices.append(app_commands.Choice(
@@ -93,9 +243,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
             break
     return choices
 
-# ==========================
-# Slash commands - Messaging
-# ==========================
+# ---------- Slash Commands ----------
 @client.tree.command(name="say", description="Send formatted message to channel")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
 async def say(interaction: discord.Interaction, channel_id: str, content: str, bold: bool=False, underline: bool=False, code_lang: str="", typing_ms: int=0):
@@ -154,147 +302,183 @@ async def recent(interaction: discord.Interaction):
     embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ---------- HELP ----------
 @client.tree.command(name="help", description="Show all available commands")
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="📖 Bot Commands", color=discord.Color.green())
     embed.add_field(name="Messaging", value="/say, /embed, /edit, /recent", inline=False)
-    embed.add_field(name="Music", value="/play, /pause, /resume, /stop, /skip, /queue, /nowplaying", inline=False)
+    embed.add_field(name="Music", value="/play, /pause, /resume, /stop, /skip, /queue, /nowplaying, /loop, /clearlist, /volume, /effect", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ==========================
-# Slash commands - Music
-# ==========================
-@client.tree.command(name="play", description="Play a song or add to queue")
-@app_commands.describe(song_query="Song name or URL")
-async def play(interaction: discord.Interaction, song_query: str):
-    await interaction.response.send_message("🎵 Searching...", ephemeral=True)
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        return await interaction.edit_original_response(content="❌ You must be in a VC.")
-
-    voice_channel = interaction.user.voice.channel
-    voice_client = interaction.guild.voice_client
+# ---------- MUSIC COMMANDS (Option 2: NO COOKIES) ----------
+@client.tree.command(name="play", description="Play a song from YouTube (name or url)")
+async def play(interaction: discord.Interaction, query: str, effect: str = ""):
+    # Defer early (may take a bit to search)
+    await interaction.response.defer(ephemeral=False)
+    vc = await ensure_voice_connected(interaction)
+    if not vc:
+        return
+    guild_id = interaction.guild.id
     try:
-        if voice_client is None:
-            voice_client = await voice_channel.connect()
-        elif voice_channel != voice_client.channel:
-            await voice_client.move_to(voice_channel)
+        stream_url, title = ytdl_get_info(query)
+    except RuntimeError as e:
+        reason = str(e)
+        if reason == "AGE_RESTRICTED":
+            # Friendly explanation and options
+            return await interaction.followup.send(
+                "❌ This video looks **age-restricted / sign-in required / private**. I don't use YouTube cookies, so I can't play restricted videos.\n\n"
+                "Try one of these:\n"
+                "• Use a **different public upload** of the same song (different uploader)\n"
+                "• Paste a direct link from another source (SoundCloud/etc.)\n"
+                "• Search with slightly different keywords (e.g., add `official audio` or `audio`)\n",
+                ephemeral=False
+            )
+        elif reason == "NOT_FOUND":
+            return await interaction.followup.send("❌ Could not find that song. Try a different query or paste a YouTube URL.", ephemeral=False)
+        else:
+            return await interaction.followup.send(f"❌ Search failed: {reason}", ephemeral=False)
     except Exception as e:
-        return await interaction.edit_original_response(content=f"❌ Could not join VC: {e}")
+        return await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=False)
 
-    ydl_opts = {"format": "bestaudio[abr<=96]/bestaudio", "noplaylist": True, "quiet": True, "no_warnings": True}
-    query = "ytsearch1:" + song_query
-    try:
-        results = await search_ytdlp_async(query, ydl_opts)
-    except Exception as e:
-        return await interaction.edit_original_response(content=f"❌ Search failed: {e}")
+    entry = {"title": title, "url": stream_url, "requester": interaction.user.display_name, "effect": effect or None}
+    music_queues.setdefault(guild_id, []).append(entry)
 
-    tracks = results.get("entries", []) if isinstance(results, dict) else []
-    if not tracks:
-        return await interaction.edit_original_response(content="❌ No results found.")
-
-    first_track = tracks[0]
-    audio_url = first_track.get("url")
-    title = first_track.get("title", "Untitled")
-
-    guild_id = str(interaction.guild_id)
-    if SONG_QUEUES.get(guild_id) is None:
-        SONG_QUEUES[guild_id] = deque()
-    SONG_QUEUES[guild_id].append((audio_url, title))
-
-    if voice_client.is_playing() or voice_client.is_paused():
-        await interaction.edit_original_response(content=f"➕ Added to queue: **{title}**")
+    guild_vc = interaction.guild.voice_client
+    # If nothing playing, start playback
+    if not guild_vc or not guild_vc.is_playing():
+        await play_next_in_queue(guild_id)
+        await interaction.followup.send(f"▶️ Now playing **{title}** — requested by {entry['requester']}")
     else:
-        await interaction.edit_original_response(content=f"▶️ Now playing: **{title}**")
-        await play_next_song(voice_client, guild_id, interaction.channel)
+        await interaction.followup.send(f"➕ Queued **{title}** — position {len(music_queues[guild_id])}")
 
-async def play_next_song(voice_client, guild_id, channel):
-    if SONG_QUEUES[guild_id]:
-        audio_url, title = SONG_QUEUES[guild_id].popleft()
-        ffmpeg_opts = {"before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", "options": "-vn"}
-        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts)
-
-        def after_play(error):
-            if error:
-                print(f"Error playing {title}: {error}")
-            fut = asyncio.run_coroutine_threadsafe(play_next_song(voice_client, guild_id, channel), client.loop)
-            try:
-                fut.result()
-            except Exception as e:
-                print(f"Error in after_play: {e}")
-
-        voice_client.play(source, after=after_play)
-        await channel.send(f"🎶 Now playing: **{title}**")
-    else:
-        await voice_client.disconnect()
-        SONG_QUEUES[guild_id] = deque()
-
-@client.tree.command(name="skip", description="Skip current song")
-async def skip(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and (vc.is_playing() or vc.is_paused()):
-        vc.stop()
-        await interaction.response.send_message("⏭️ Skipped.", ephemeral=False)
-    else:
-        await interaction.response.send_message("❌ Nothing playing.", ephemeral=True)
-
-@client.tree.command(name="pause", description="Pause playback")
+@client.tree.command(name="pause", description="Pause current song")
 async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
-    if not vc:
-        return await interaction.response.send_message("❌ Not in VC.", ephemeral=True)
-    if vc.is_playing():
-        vc.pause()
-        await interaction.response.send_message("⏸️ Paused.", ephemeral=False)
-    else:
-        await interaction.response.send_message("❌ Nothing playing.", ephemeral=True)
+    if not vc or not vc.is_playing():
+        return await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+    vc.pause()
+    await interaction.response.send_message("⏸️ Paused", ephemeral=True)
 
-@client.tree.command(name="resume", description="Resume playback")
+@client.tree.command(name="resume", description="Resume paused song")
 async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
-    if not vc:
-        return await interaction.response.send_message("❌ Not in VC.", ephemeral=True)
-    if vc.is_paused():
-        vc.resume()
-        await interaction.response.send_message("▶️ Resumed.", ephemeral=False)
-    else:
-        await interaction.response.send_message("❌ Not paused.", ephemeral=True)
+    if not vc or not vc.is_paused():
+        return await interaction.response.send_message("❌ Nothing is paused.", ephemeral=True)
+    vc.resume()
+    await interaction.response.send_message("▶️ Resumed", ephemeral=True)
 
 @client.tree.command(name="stop", description="Stop playback and clear queue")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if not vc:
-        return await interaction.response.send_message("❌ Not in VC.", ephemeral=True)
-    SONG_QUEUES[str(interaction.guild_id)] = deque()
-    vc.stop()
-    await vc.disconnect()
-    await interaction.response.send_message("⏹️ Stopped and cleared queue.", ephemeral=False)
+        return await interaction.response.send_message("❌ I'm not connected to a VC.", ephemeral=True)
+    try:
+        vc.stop()
+    except Exception:
+        pass
+    music_queues.pop(interaction.guild.id, None)
+    now_playing.pop(interaction.guild.id, None)
+    try:
+        await vc.disconnect()
+    except Exception:
+        pass
+    await interaction.response.send_message("⏹️ Stopped and cleared queue.", ephemeral=True)
 
-@client.tree.command(name="queue", description="Show song queue")
-async def queue(interaction: discord.Interaction):
-    guild_id = str(interaction.guild_id)
-    if not SONG_QUEUES.get(guild_id):
-        return await interaction.response.send_message("Queue is empty.", ephemeral=True)
-    qlist = [f"{i+1}. {title}" for i, (_, title) in enumerate(list(SONG_QUEUES[guild_id])[:10])]
-    embed = discord.Embed(title="🎶 Queue", description="\n".join(qlist), color=discord.Color.purple())
-    await interaction.response.send_message(embed=embed, ephemeral=False)
-
-@client.tree.command(name="nowplaying", description="Show current song")
-async def nowplaying(interaction: discord.Interaction):
+@client.tree.command(name="skip", description="Skip current song")
+async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if not vc or not vc.is_playing():
         return await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
-    await interaction.response.send_message("🎧 A song is currently playing.", ephemeral=True)
+    vc.stop()
+    await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
 
-# ==========================
-# Events
-# ==========================
+@client.tree.command(name="queue", description="Show music queue")
+async def queue_cmd(interaction: discord.Interaction):
+    q = music_queues.get(interaction.guild.id, [])
+    if not q and not now_playing.get(interaction.guild.id):
+        return await interaction.response.send_message("🎶 Queue is empty.", ephemeral=True)
+    lines = []
+    current = now_playing.get(interaction.guild.id)
+    if current:
+        lines.append(f"▶️ Now: **{current['title']}** — requested by {current['requester']}")
+    for i, e in enumerate(q[:10], start=1):
+        lines.append(f"{i}. {e['title']} — {e['requester']}")
+    await interaction.response.send_message("🎶\n" + "\n".join(lines), ephemeral=True)
+
+@client.tree.command(name="nowplaying", description="Show current song")
+async def nowplaying_cmd(interaction: discord.Interaction):
+    current = now_playing.get(interaction.guild.id)
+    if not current:
+        return await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+    await interaction.response.send_message(f"🎧 Now playing: **{current['title']}** — requested by {current['requester']}", ephemeral=True)
+
+@client.tree.command(name="loop", description="Loop the current song (admin only)")
+async def loop_cmd(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Only admins can toggle loop.", ephemeral=True)
+    gid = interaction.guild.id
+    loop_flags[gid] = not loop_flags.get(gid, False)
+    await interaction.response.send_message(f"🔁 Loop set to {loop_flags[gid]}", ephemeral=True)
+
+@client.tree.command(name="clearlist", description="Clear the music queue (admin only)")
+async def clearlist(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Only admins can clear queue.", ephemeral=True)
+    music_queues.pop(interaction.guild.id, None)
+    await interaction.response.send_message("🗑️ Queue cleared", ephemeral=True)
+
+@client.tree.command(name="volume", description="Change music volume (0-200)")
+async def volume_cmd(interaction: discord.Interaction, level: int):
+    if level < 0 or level > 200:
+        return await interaction.response.send_message("❌ Volume must be 0-200.", ephemeral=True)
+    gid = interaction.guild.id
+    volumes[gid] = max(0.0, min(level / 100.0, 2.0))
+    vc = interaction.guild.voice_client
+    if vc and vc.source and isinstance(vc.source, discord.PCMVolumeTransformer):
+        vc.source.volume = volumes[gid]
+    await interaction.response.send_message(f"🔊 Volume set to {level}%", ephemeral=True)
+
+@client.tree.command(name="effect", description="Apply simple audio effect to queued song (e.g. bass, lofi)")
+async def effect_cmd(interaction: discord.Interaction, effect: str):
+    valid = {"bass", "lofi"}
+    if effect not in valid:
+        return await interaction.response.send_message("❌ Supported effects: bass, lofi", ephemeral=True)
+    gid = interaction.guild.id
+    q = music_queues.setdefault(gid, [])
+    if not q:
+        return await interaction.response.send_message("❌ Queue empty — add a song first.", ephemeral=True)
+    q[-1]['effect'] = effect
+    await interaction.response.send_message(f"✨ Effect '{effect}' applied to queued song **{q[-1]['title']}**", ephemeral=True)
+
+# ---------- DEBUG SYNC ----------
+@client.tree.command(name="sync", description="Manually resync commands (Admin only)")
+async def sync_commands(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Only admins can sync.", ephemeral=True)
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            synced = await client.tree.sync(guild=guild)
+            await interaction.response.send_message(f"✅ Resynced {len(synced)} commands.", ephemeral=True)
+        else:
+            synced = await client.tree.sync()
+            await interaction.response.send_message(f"🌍 Globally resynced {len(synced)} commands.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Sync failed: {e}", ephemeral=True)
+
+# ---------- Events ----------
 @client.event
 async def on_ready():
-    await client.tree.sync()
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            synced = await client.tree.sync(guild=guild)
+            print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}")
+        else:
+            synced = await client.tree.sync()
+            print(f"🌍 Globally synced {len(synced)} commands")
+    except Exception as e:
+        print(f"❌ Sync error: {e}")
     print(f"✅ Logged in as {client.user}")
 
-# ==========================
-# Run
-# ==========================
 client.run(TOKEN)
