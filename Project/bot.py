@@ -69,35 +69,70 @@ async def help_command(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# Say command with custom channel autocomplete
 @client.tree.command(name="say", description="Send formatted message to channel")
-async def say(interaction: discord.Interaction, channel: discord.TextChannel, content: str, bold: bool=False, underline: bool=False, code_lang: str="", typing_ms: int=0):
+async def say(
+    interaction: discord.Interaction,
+    channel: str,  # 👈 ab yahan string (channel id) aayegi
+    content: str,
+    bold: bool=False,
+    underline: bool=False,
+    code_lang: str="",
+    typing_ms: int=0
+):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
     await interaction.response.send_message("Sending...", ephemeral=True)
+
+    channel_obj = interaction.guild.get_channel(int(channel))
     if typing_ms > 0:
-        async with channel.typing():
+        async with channel_obj.typing():
             await asyncio.sleep(typing_ms / 1000)
+
     final = format_content(content, bold, underline, code_lang)
-    sent = await channel.send(final)
+    sent = await channel_obj.send(final)
     await interaction.edit_original_response(content=f"Sent ✅ ({sent.jump_url})")
 
+# Autocomplete for channel selection
+@say.autocomplete("channel")
+async def channel_autocomplete(interaction: discord.Interaction, current: str):
+    channels = [c for c in interaction.guild.text_channels if c.permissions_for(interaction.user).send_messages]
+    results = []
+    for c in channels[:30]:  # sirf 30 channels tak
+        results.append(app_commands.Choice(name=c.name, value=str(c.id)))
+    return results
+
+# Embed command
 @client.tree.command(name="embed", description="Send embed message")
-async def embed(interaction: discord.Interaction, channel: discord.TextChannel, title: str, description: str, color: str="#5865F2", url: str=""):
+async def embed(interaction: discord.Interaction, channel: str, title: str, description: str, color: str="#5865F2", url: str=""):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
     await interaction.response.send_message("Sending embed...", ephemeral=True)
+
+    channel_obj = interaction.guild.get_channel(int(channel))
     try:
         col = discord.Color(int(color.replace("#", ""), 16))
     except:
         col = discord.Color.blurple()
+
     e = discord.Embed(title=title, description=description, color=col)
     if url:
         e.url = url
-    sent = await channel.send(embed=e)
+    sent = await channel_obj.send(embed=e)
     await interaction.edit_original_response(content=f"Embed sent ✅ ({sent.jump_url})")
 
+# Autocomplete for embed channel
+@embed.autocomplete("channel")
+async def embed_channel_autocomplete(interaction: discord.Interaction, current: str):
+    channels = [c for c in interaction.guild.text_channels if c.permissions_for(interaction.user).send_messages]
+    results = []
+    for c in channels[:30]:
+        results.append(app_commands.Choice(name=c.name, value=str(c.id)))
+    return results
+
+# Edit command
 @client.tree.command(name="edit", description="Edit existing message with link")
 async def edit(interaction: discord.Interaction, message_link: str, new_content: str, bold: bool=False, underline: bool=False, code_lang: str=""):
     if not interaction.user.guild_permissions.administrator:
@@ -121,8 +156,8 @@ async def edit(interaction: discord.Interaction, message_link: str, new_content:
 async def on_ready():
     try:
         guild = discord.Object(id=GUILD_ID)
-        client.tree.clear_commands(guild=guild)   # 👈 purane commands sirf isi server ke liye clear
-        await client.tree.sync(guild=guild)       # 👈 sirf is guild ke liye sync karo (instant update)
+        client.tree.clear_commands(guild=guild)   # sirf is server ke liye clear
+        await client.tree.sync(guild=guild)       # sirf is server ke liye sync
         print(f"✅ Commands synced for guild {GUILD_ID}")
     except Exception as e:
         print(f"⚠️ Sync failed: {e}")
