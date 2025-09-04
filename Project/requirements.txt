@@ -1,2 +1,7 @@
 discord.py
+discord.py[voice]
+yt-dlp
+ffmpeg
 python-dotenv
+
+
