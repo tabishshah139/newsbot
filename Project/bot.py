@@ -90,18 +90,25 @@ async def say(
     sent = await channel_obj.send(final)
     await interaction.edit_original_response(content=f"Sent ✅ ({sent.jump_url})")
 
-# Autocomplete for channel selection
+# Autocomplete for /say command
 @say.autocomplete("channel")
 async def channel_autocomplete(interaction: discord.Interaction, current: str):
-    channels = [
-        c for c in interaction.guild.text_channels
-        if c.permissions_for(interaction.user).send_messages
-    ]
-    results = [
-        app_commands.Choice(name=c.name, value=str(c.id))
-        for c in channels if current.lower() in c.name.lower()
-    ][:15]  # 👈 max 15 results
-    return results
+    try:
+        if not interaction.guild:  # Agar DM hai
+            return []
+
+        channels = [
+            c for c in interaction.guild.text_channels
+            if c.permissions_for(interaction.user).send_messages
+        ]
+        results = [
+            app_commands.Choice(name=c.name, value=str(c.id))
+            for c in channels if current.lower() in c.name.lower()
+        ][:15]  # max 15 results
+        return results
+    except Exception as e:
+        print(f"⚠️ Autocomplete error (/say): {e}")
+        return []
 
 # Embed command
 @client.tree.command(name="embed", description="Send embed message")
@@ -130,18 +137,25 @@ async def embed(
     sent = await channel_obj.send(embed=e)
     await interaction.edit_original_response(content=f"Embed sent ✅ ({sent.jump_url})")
 
-# Autocomplete for embed channel
+# Autocomplete for /embed command
 @embed.autocomplete("channel")
 async def embed_channel_autocomplete(interaction: discord.Interaction, current: str):
-    channels = [
-        c for c in interaction.guild.text_channels
-        if c.permissions_for(interaction.user).send_messages
-    ]
-    results = [
-        app_commands.Choice(name=c.name, value=str(c.id))
-        for c in channels if current.lower() in c.name.lower()
-    ][:15]  # 👈 max 15 results
-    return results
+    try:
+        if not interaction.guild:
+            return []
+
+        channels = [
+            c for c in interaction.guild.text_channels
+            if c.permissions_for(interaction.user).send_messages
+        ]
+        results = [
+            app_commands.Choice(name=c.name, value=str(c.id))
+            for c in channels if current.lower() in c.name.lower()
+        ][:15]
+        return results
+    except Exception as e:
+        print(f"⚠️ Autocomplete error (/embed): {e}")
+        return []
 
 # Edit command
 @client.tree.command(name="edit", description="Edit existing message with link")
@@ -165,6 +179,10 @@ async def edit(
 
     channel = await client.fetch_channel(int(channel_id))
     msg = await channel.fetch_message(int(msg_id))
+
+    if msg.author.id != client.user.id:
+        return await interaction.response.send_message("❌ I can only edit my own messages.", ephemeral=True)
+
     final = format_content(new_content, bold, underline, code_lang)
     await msg.edit(content=final)
     await interaction.response.send_message("Edited ✅", ephemeral=True)
