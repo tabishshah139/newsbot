@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# Optional fast sync to a specific server (guild)
+# Put your server ID in env as GUILD_ID
+GUILD_ID_ENV = os.getenv("GUILD_ID")
+GUILD_ID = int(GUILD_ID_ENV) if GUILD_ID_ENV and GUILD_ID_ENV.isdigit() else None
+
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
@@ -91,7 +96,7 @@ async def embed(interaction: discord.Interaction, channel_id: str, title: str, d
     channel = await client.fetch_channel(int(channel_id))
     try:
         col = discord.Color(int(color.replace("#", ""), 16))
-    except:
+    except Exception:
         col = discord.Color.blurple()
     e = discord.Embed(title=title, description=description, color=col)
     if url:
@@ -189,7 +194,20 @@ async def effect(interaction: discord.Interaction, effect: str):
 # ---------- Events ----------
 @client.event
 async def on_ready():
-    await client.tree.sync()
+    try:
+        # 1) Fast guild sync so commands instantly appear in your server
+        if GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
+            synced_guild = await client.tree.sync(guild=guild)
+            print(f"✅ Synced {len(synced_guild)} commands to guild {GUILD_ID}")
+
+        # 2) (Optional) Also push global sync for all servers
+        synced_global = await client.tree.sync()
+        print(f"🌍 Synced {len(synced_global)} global commands")
+
+    except Exception as e:
+        print(f"❌ Sync error: {e}")
+
     print(f"✅ Logged in as {client.user}")
 
 client.run(TOKEN)
