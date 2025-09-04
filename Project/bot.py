@@ -1,4 +1,3 @@
-# final bot.py (with full music system)
 import os
 import re
 import asyncio
@@ -7,6 +6,7 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 import yt_dlp
+from yt_dlp.utils import DownloadError
 
 # Load env variables
 load_dotenv()
@@ -24,6 +24,7 @@ music_queues = {}       # {guild_id: [ {title, url, requester, effect} ]}
 now_playing = {}        # {guild_id: {title, url, requester, effect}}
 loop_flags = {}         # {guild_id: bool}
 volumes = {}            # {guild_id: float}  (0.0 - 2.0)
+
 ffmpeg_base_opts = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn"
@@ -82,7 +83,13 @@ async def ensure_voice_connected(interaction: discord.Interaction):
     return vc
 
 def ytdl_get_info(query: str):
-    """Return (stream_url, title) or raise Exception."""
+    """
+    Try to get a playable stream URL and title for the given query or url.
+    - First tries the query/url directly.
+    - On failure (non-auth), tries ytsearch and returns top result.
+    - If the extractor complains about sign-in / age restriction, raises RuntimeError("AGE_RESTRICTED").
+    - If nothing found, raises RuntimeError("NOT_FOUND").
+    """
     ydl_opts = {
         'format': 'bestaudio/best',
         'noplaylist': True,
@@ -91,24 +98,47 @@ def ytdl_get_info(query: str):
         'source_address': '0.0.0.0',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        # Accept either URL or search query
+        # 1) try direct (url or query)
         try:
             info = ydl.extract_info(query, download=False)
-        except Exception as e:
-            # try searching
-            search = f"ytsearch:{query}"
-            info = ydl.extract_info(search, download=False)
-            if not info or 'entries' not in info or len(info['entries']) == 0:
-                raise e
+        except DownloadError as e:
+            err = str(e)
+            # Detect age-restricted / sign-in required messages from yt-dlp
+            if "Sign in to confirm" in err or "sign in to confirm" in err.lower() or "age-restricted" in err.lower():
+                raise RuntimeError("AGE_RESTRICTED") from e
+            # otherwise try a search fallback
+            try:
+                search = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                entries = search.get('entries')
+                if not entries:
+                    raise RuntimeError("NOT_FOUND")
+                info = entries[0]
+            except Exception:
+                raise RuntimeError("NOT_FOUND") from e
+        except Exception:
+            # other unexpected errors: try search as well
+            try:
+                search = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                entries = search.get('entries')
+                if not entries:
+                    raise RuntimeError("NOT_FOUND")
+                info = entries[0]
+            except Exception as e:
+                raise RuntimeError("NOT_FOUND") from e
+
+        # If we got a playlist/search result, normalize to single video dict
+        if isinstance(info, dict) and 'entries' in info and info['entries']:
             info = info['entries'][0]
-        # info may be the video dict
-        # Some extractors provide 'url' or require using formats
+
+        # Try to find a direct stream url in info
         stream_url = info.get('url')
         if not stream_url:
-            formats = info.get('formats')
+            formats = info.get('formats') or []
             if not formats:
-                raise RuntimeError("No playable formats found.")
-            stream_url = formats[-1]['url']
+                raise RuntimeError("NOT_FOUND")
+            # pick the best audio-like format (usually last is best)
+            stream_url = formats[-1].get('url')
+
         title = info.get('title', 'Unknown Title')
         return stream_url, title
 
@@ -119,33 +149,30 @@ def build_ffmpeg_options(effect: str = None):
         if effect == "bass":
             af = "bass=g=10"
         elif effect == "lofi":
-            # lowpass + slight reverb-ish effect as simple lofi
             af = "lowpass=f=8000,asetrate=44100*0.8"
         else:
             af = None
         if af:
-            # append audio filter to options
             opts = opts.copy()
-            # options string - include -af
+            # include audio filter
             opts["options"] = f"-vn -af \"{af}\""
     return opts
 
-# ---------- Music Playback Flow ----------
 async def play_next_in_queue(guild_id: int):
-    """Coroutine to pop next entry and start playback. Called internally."""
+    """Pop next entry and start playback. Called internally."""
     queue = music_queues.get(guild_id, [])
-    vc = None
     guild = client.get_guild(guild_id)
     if not guild:
         return
     vc = guild.voice_client
+
     if loop_flags.get(guild_id) and now_playing.get(guild_id):
-        # loop current song
+        # loop current song (do not pop)
         entry = now_playing[guild_id]
     else:
         if not queue:
             now_playing.pop(guild_id, None)
-            # if nothing left, disconnect after a short delay
+            # disconnect if idle
             if vc and not vc.is_playing():
                 try:
                     await asyncio.sleep(3)
@@ -157,16 +184,24 @@ async def play_next_in_queue(guild_id: int):
         entry = queue.pop(0)
         music_queues[guild_id] = queue
 
-    # prepare ffmpeg source
     stream_url = entry['url']
     effect = entry.get('effect')
     ff_opts = build_ffmpeg_options(effect)
-    source = discord.FFmpegPCMAudio(stream_url, **ff_opts)
+    try:
+        source = discord.FFmpegPCMAudio(stream_url, **ff_opts)
+    except Exception as e:
+        # if ffmpeg cannot open, skip to next
+        print(f"[Music] FFmpeg error for guild {guild_id}: {e}")
+        now_playing.pop(guild_id, None)
+        await play_next_in_queue(guild_id)
+        return
+
     volume = volumes.get(guild_id, 0.25)
     player = discord.PCMVolumeTransformer(source, volume=volume)
 
     def after_play(error):
-        # schedule next in event loop
+        if error:
+            print(f"[Music] playback error in guild {guild_id}: {error}")
         fut = asyncio.run_coroutine_threadsafe(play_next_in_queue(guild_id), client.loop)
         try:
             fut.result()
@@ -175,13 +210,11 @@ async def play_next_in_queue(guild_id: int):
 
     try:
         if not vc:
-            # try to connect to a voice channel if possible (do nothing if not)
-            # cannot know which channel — expect already connected
+            # nothing to do if no voice client (should normally be connected)
             return
         vc.play(player, after=after_play)
         now_playing[guild_id] = entry
     except Exception as e:
-        # try to notify a channel: find last requester channel via guild system channel
         now_playing.pop(guild_id, None)
         print(f"[Music] play error in guild {guild_id}: {e}")
 
@@ -277,9 +310,10 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="Music", value="/play, /pause, /resume, /stop, /skip, /queue, /nowplaying, /loop, /clearlist, /volume, /effect", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------- MUSIC COMMANDS ----------
+# ---------- MUSIC COMMANDS (Option 2: NO COOKIES) ----------
 @client.tree.command(name="play", description="Play a song from YouTube (name or url)")
 async def play(interaction: discord.Interaction, query: str, effect: str = ""):
+    # Defer early (may take a bit to search)
     await interaction.response.defer(ephemeral=False)
     vc = await ensure_voice_connected(interaction)
     if not vc:
@@ -287,14 +321,30 @@ async def play(interaction: discord.Interaction, query: str, effect: str = ""):
     guild_id = interaction.guild.id
     try:
         stream_url, title = ytdl_get_info(query)
+    except RuntimeError as e:
+        reason = str(e)
+        if reason == "AGE_RESTRICTED":
+            # Friendly explanation and options
+            return await interaction.followup.send(
+                "❌ This video looks **age-restricted / sign-in required / private**. I don't use YouTube cookies, so I can't play restricted videos.\n\n"
+                "Try one of these:\n"
+                "• Use a **different public upload** of the same song (different uploader)\n"
+                "• Paste a direct link from another source (SoundCloud/etc.)\n"
+                "• Search with slightly different keywords (e.g., add `official audio` or `audio`)\n",
+                ephemeral=False
+            )
+        elif reason == "NOT_FOUND":
+            return await interaction.followup.send("❌ Could not find that song. Try a different query or paste a YouTube URL.", ephemeral=False)
+        else:
+            return await interaction.followup.send(f"❌ Search failed: {reason}", ephemeral=False)
     except Exception as e:
-        return await interaction.followup.send(f"❌ Could not find/play: {e}")
+        return await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=False)
 
     entry = {"title": title, "url": stream_url, "requester": interaction.user.display_name, "effect": effect or None}
     music_queues.setdefault(guild_id, []).append(entry)
 
-    # auto-start if nothing playing
     guild_vc = interaction.guild.voice_client
+    # If nothing playing, start playback
     if not guild_vc or not guild_vc.is_playing():
         await play_next_in_queue(guild_id)
         await interaction.followup.send(f"▶️ Now playing **{title}** — requested by {entry['requester']}")
@@ -322,7 +372,6 @@ async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if not vc:
         return await interaction.response.send_message("❌ I'm not connected to a VC.", ephemeral=True)
-    # stop and clear
     try:
         vc.stop()
     except Exception:
@@ -391,8 +440,6 @@ async def volume_cmd(interaction: discord.Interaction, level: int):
 
 @client.tree.command(name="effect", description="Apply simple audio effect to queued song (e.g. bass, lofi)")
 async def effect_cmd(interaction: discord.Interaction, effect: str):
-    # This command sets the effect to apply to the next queued song (for simplicity)
-    # Accepts 'bass' or 'lofi'
     valid = {"bass", "lofi"}
     if effect not in valid:
         return await interaction.response.send_message("❌ Supported effects: bass, lofi", ephemeral=True)
@@ -400,7 +447,6 @@ async def effect_cmd(interaction: discord.Interaction, effect: str):
     q = music_queues.setdefault(gid, [])
     if not q:
         return await interaction.response.send_message("❌ Queue empty — add a song first.", ephemeral=True)
-    # apply effect to last queued song (most recent added)
     q[-1]['effect'] = effect
     await interaction.response.send_message(f"✨ Effect '{effect}' applied to queued song **{q[-1]['title']}**", ephemeral=True)
 
