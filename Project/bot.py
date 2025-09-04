@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 APP_ID = os.getenv("APPLICATION_ID")
+GUILD_ID = int(os.getenv("GUILD_ID"))  # 👈 apna server ID .env me daalna hoga
 
 # Bot setup
 intents = discord.Intents.default()
@@ -118,11 +119,11 @@ async def edit(interaction: discord.Interaction, message_link: str, new_content:
 # ---------- Events ----------
 @client.event
 async def on_ready():
-    # Purane commands clear karke naye sync karna
     try:
-        client.tree.clear_commands(guild=None)   # Clear all global commands
-        await client.tree.sync(guild=None)       # Resync global commands
-        print(f"✅ Commands cleared & synced globally for {client.user}")
+        guild = discord.Object(id=GUILD_ID)
+        client.tree.clear_commands(guild=guild)   # 👈 purane commands sirf isi server ke liye clear
+        await client.tree.sync(guild=guild)       # 👈 sirf is guild ke liye sync karo (instant update)
+        print(f"✅ Commands synced for guild {GUILD_ID}")
     except Exception as e:
         print(f"⚠️ Sync failed: {e}")
 
