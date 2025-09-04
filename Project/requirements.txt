@@ -2,6 +2,7 @@ discord.py
 discord.py[voice]
 yt-dlp
 python-dotenv
+ffmpeg
 
 
 
