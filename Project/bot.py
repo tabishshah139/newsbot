@@ -6,13 +6,14 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
-# Load .env
+# Load .env / Railway Env Vars
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Bot setup with intents
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # required for on_member_join event
 client = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- Cache (per user, max 30 channels) ----------
@@ -45,6 +46,60 @@ def parse_message_link(link: str):
         return None
     return match.group(1), match.group(2), match.group(3)
 
+# ---------- Status System ----------
+use_custom_status = False
+custom_status_message = None
+last_joined_member = "No one yet"
+
+async def status_loop():
+    await client.wait_until_ready()
+    guild_id = os.getenv("GUILD_ID")
+    guild = client.get_guild(int(guild_id)) if guild_id else None
+    global use_custom_status, custom_status_message, last_joined_member
+
+    toggle = True
+    while not client.is_closed():
+        if use_custom_status and custom_status_message:
+            await client.change_presence(activity=discord.CustomActivity(name=custom_status_message))
+            await asyncio.sleep(10)
+            continue
+
+        if guild:
+            if toggle:
+                count = guild.member_count
+                await client.change_presence(activity=discord.CustomActivity(name=f"Total: {count} Members"))
+            else:
+                await client.change_presence(activity=discord.CustomActivity(name=f"Welcome {last_joined_member}"))
+            toggle = not toggle
+
+        await asyncio.sleep(10)
+
+@client.event
+async def on_member_join(member):
+    global last_joined_member
+    last_joined_member = member.name
+
+@client.tree.command(name="set_custom_status", description="Set a custom bot status (Admin only)")
+async def set_custom_status(interaction: discord.Interaction, message: str):
+    global use_custom_status, custom_status_message
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
+
+    use_custom_status = True
+    custom_status_message = message
+    await client.change_presence(activity=discord.CustomActivity(name=message))
+    await interaction.response.send_message(f"✅ Custom status set: {message}", ephemeral=True)
+
+@client.tree.command(name="set_default_status", description="Revert to default looped status (Admin only)")
+async def set_default_status(interaction: discord.Interaction):
+    global use_custom_status, custom_status_message
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
+
+    use_custom_status = False
+    custom_status_message = None
+    await interaction.response.send_message("✅ Default status loop resumed.", ephemeral=True)
+
 # ---------- Autocomplete ----------
 async def channel_autocomplete(interaction: discord.Interaction, current: str):
     choices = []
@@ -53,7 +108,6 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
     if not guild:
         return []
 
-    # Recent channels (per user)
     if user_id in recent_channels and guild.id in recent_channels[user_id]:
         for cid in recent_channels[user_id][guild.id][:10]:
             channel = guild.get_channel(cid)
@@ -62,13 +116,12 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
                     name=f"⭐ {channel.name}", value=str(channel.id)
                 ))
 
-    # Normal channels
     for channel in guild.text_channels:
         if current.lower() in channel.name.lower():
             choices.append(app_commands.Choice(
                 name=channel.name, value=str(channel.id)
             ))
-        if len(choices) >= 15:  # max 15
+        if len(choices) >= 15:
             break
 
     return choices
@@ -76,15 +129,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
 # ---------- Slash Commands ----------
 @client.tree.command(name="say", description="Send formatted message to channel")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
-async def say(
-    interaction: discord.Interaction, 
-    channel_id: str, 
-    content: str, 
-    bold: bool=False, 
-    underline: bool=False, 
-    code_lang: str="", 
-    typing_ms: int=0
-):
+async def say(interaction: discord.Interaction, channel_id: str, content: str, bold: bool=False, underline: bool=False, code_lang: str="", typing_ms: int=0):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
 
@@ -92,7 +137,7 @@ async def say(
     channel = await client.fetch_channel(int(channel_id))
     if typing_ms > 0:
         async with channel.typing():
-            await asyncio.sleep(typing_ms / 1000)
+            await asyncio.sleep(min(typing_ms, 10000) / 1000)
     final = format_content(content, bold, underline, code_lang)
     sent = await channel.send(final)
     update_recent_channel(interaction.user.id, interaction.guild.id, int(channel_id))
@@ -100,16 +145,9 @@ async def say(
 
 @client.tree.command(name="embed", description="Send embed message")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
-async def embed(
-    interaction: discord.Interaction, 
-    channel_id: str, 
-    title: str, 
-    description: str, 
-    color: str="#5865F2", 
-    url: str=""
-):
+async def embed(interaction: discord.Interaction, channel_id: str, title: str, description: str, color: str="#5865F2", url: str=""):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
+        return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
 
     await interaction.response.send_message("Sending embed...", ephemeral=True)
     channel = await client.fetch_channel(int(channel_id))
@@ -125,16 +163,9 @@ async def embed(
     await interaction.edit_original_response(content=f"Embed sent ✅ ({sent.jump_url})")
 
 @client.tree.command(name="edit", description="Edit existing message with link")
-async def edit(
-    interaction: discord.Interaction, 
-    message_link: str, 
-    new_content: str, 
-    bold: bool=False, 
-    underline: bool=False, 
-    code_lang: str=""
-):
+async def edit(interaction: discord.Interaction, message_link: str, new_content: str, bold: bool=False, underline: bool=False, code_lang: str=""):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ You are not allowed to use this command.", ephemeral=True)
+        return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
 
     parsed = parse_message_link(message_link)
     if not parsed:
@@ -161,52 +192,20 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Embed(
-        title="📌 Your Recent Channels", 
-        description="\n".join(names) if names else "None", 
-        color=discord.Color.blue()
-    )
+    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @client.tree.command(name="help", description="Show all available commands")
 async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="📖 Bot Commands Help",
-        description="Here are the available commands:",
-        color=discord.Color.blurple()
-    )
-    embed.add_field(
-        name="/say",
-        value="(Admin only) Send a formatted message to a selected channel.\n"
-              "Options: channel_id, content, bold, underline, code_lang, typing_ms",
-        inline=False
-    )
-    embed.add_field(
-        name="/embed",
-        value="(Admin only) Send an embed message with title, description, color, and URL.",
-        inline=False
-    )
-    embed.add_field(
-        name="/edit",
-        value="(Admin only) Edit an existing bot message using its link.",
-        inline=False
-    )
-    embed.add_field(
-        name="/recent",
-        value="Show your last used channels (only visible to you).",
-        inline=False
-    )
-    embed.add_field(
-        name="/help",
-        value="Show this help menu.",
-        inline=False
-    )
-    embed.add_field(
-        name="!ping (text command)",
-        value="Classic text command to check latency.",
-        inline=False
-    )
-
+    embed = discord.Embed(title="📖 Bot Commands Help", description="Here are the available commands:", color=discord.Color.blurple())
+    embed.add_field(name="/say", value="(Admin only) Send a formatted message to a selected channel.\nOptions: channel_id, content, bold, underline, code_lang, typing_ms", inline=False)
+    embed.add_field(name="/embed", value="(Admin only) Send an embed message with title, description, color, and URL.", inline=False)
+    embed.add_field(name="/edit", value="(Admin only) Edit an existing bot message using its link.", inline=False)
+    embed.add_field(name="/recent", value="Show your last used channels (only visible to you).", inline=False)
+    embed.add_field(name="/set_custom_status", value="(Admin only) Set a custom bot status, stops loop.", inline=False)
+    embed.add_field(name="/set_default_status", value="(Admin only) Resume default rotating status.", inline=False)
+    embed.add_field(name="/help", value="Show this help menu.", inline=False)
+    embed.add_field(name="!ping (text command)", value="Classic text command to check latency.", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ---------- Text Command ----------
@@ -217,8 +216,9 @@ async def ping(ctx):
 # ---------- Events ----------
 @client.event
 async def on_ready():
-    synced = await client.tree.sync()  # ✅ Global sync
+    synced = await client.tree.sync()
     print(f"✅ Synced {len(synced)} commands globally")
     print(f"✅ Logged in as {client.user}")
+    client.loop.create_task(status_loop())
 
 client.run(TOKEN)
