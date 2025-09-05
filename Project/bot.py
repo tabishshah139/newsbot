@@ -49,7 +49,7 @@ def parse_message_link(link: str):
 # ---------- Status System ----------
 use_custom_status = False
 custom_status_message = None
-last_joined_member = "No one yet"
+last_joined_member = None   # Default: None, so we can show "Waiting for New Member"
 
 async def status_loop():
     await client.wait_until_ready()
@@ -69,7 +69,10 @@ async def status_loop():
                 count = guild.member_count
                 await client.change_presence(activity=discord.CustomActivity(name=f"Total: {count} Members"))
             else:
-                await client.change_presence(activity=discord.CustomActivity(name=f"Welcome {last_joined_member}"))
+                if last_joined_member:  # agar koi member join kar chuka hai
+                    await client.change_presence(activity=discord.CustomActivity(name=f"Welcome {last_joined_member}"))
+                else:  # abhi tak koi new member join nahi hua
+                    await client.change_presence(activity=discord.CustomActivity(name="Waiting for New Member"))
             toggle = not toggle
 
         await asyncio.sleep(10)
