@@ -1,4 +1,4 @@
-# bot.py — Perfect Rank System with Notifications
+# bot.py — Perfect Rank System with Admin XP Fix
 import os
 import re
 import json
@@ -644,36 +644,48 @@ async def setreport(interaction: discord.Interaction, channel_id: str):
     ch = interaction.guild.get_channel(int(channel_id))
     await interaction.response.send_message(f"✅ Reports will be sent to {ch.mention}", ephemeral=True)
 
-# ---------- MESSAGE FILTER + XP tracking ----------
+# ---------- MESSAGE FILTER + XP tracking (FIXED FOR ADMINS) ----------
 @client.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
 
-    if message.author.guild_permissions.administrator:
-        return
+    is_admin = message.author.guild_permissions.administrator
+    has_bypass = any(role.name == BYPASS_ROLE for role in message.author.roles) if hasattr(message.author, 'roles') else False
 
-    try:
-        if any(role.name == BYPASS_ROLE for role in message.author.roles):
-            return
-    except Exception:
-        pass
+    # ✅ Only apply filters to non-admin, non-bypass users
+    if not is_admin and not has_bypass:
+        content_lower = message.content.lower()
 
-    # Check if message is in XP channel
-    if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
-        return
+        # check bad words
+        for bad in BAD_WORDS:
+            if bad and bad in content_lower:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                try:
+                    await message.channel.send(f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.", delete_after=8)
+                except Exception:
+                    pass
+                rid = REPORT_CHANNELS.get(message.guild.id)
+                if rid:
+                    log_ch = message.guild.get_channel(rid)
+                    if log_ch:
+                        try:
+                            await log_ch.send(f"⚠️ {message.author.mention} has misbehaved and used: **{bad}** (in {message.channel.mention})")
+                        except Exception:
+                            pass
+                return
 
-    content_lower = message.content.lower()
-
-    # check bad words
-    for bad in BAD_WORDS:
-        if bad and bad in content_lower:
+        # check links / adverts
+        if ("http://" in content_lower or "https://" in content_lower or "discord.gg/" in content_lower):
             try:
                 await message.delete()
             except Exception:
                 pass
             try:
-                await message.channel.send(f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.", delete_after=8)
+                await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete_after=8)
             except Exception:
                 pass
             rid = REPORT_CHANNELS.get(message.guild.id)
@@ -681,32 +693,16 @@ async def on_message(message: discord.Message):
                 log_ch = message.guild.get_channel(rid)
                 if log_ch:
                     try:
-                        await log_ch.send(f"⚠️ {message.author.mention} has misbehaved and used: **{bad}** (in {message.channel.mention})")
+                        await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
                     except Exception:
                         pass
             return
 
-    # check links / adverts
-    if ("http://" in content_lower or "https://" in content_lower or "discord.gg/" in content_lower):
-        try:
-            await message.delete()
-        except Exception:
-            pass
-        try:
-            await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete_after=8)
-        except Exception:
-            pass
-        rid = REPORT_CHANNELS.get(message.guild.id)
-        if rid:
-            log_ch = message.guild.get_channel(rid)
-            if log_ch:
-                try:
-                    await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
-                except Exception:
-                    pass
+    # Check if message is in XP channel
+    if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
         return
 
-    # XP & daily tracking
+    # ✅ NOW ADMINS WILL GET XP TOO
     try:
         # Get old data for comparison
         old_data = await get_user_row(message.guild.id, message.author.id)
