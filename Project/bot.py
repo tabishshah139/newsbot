@@ -165,7 +165,7 @@ async def set_default_status(interaction: discord.Interaction):
     custom_status[interaction.guild.id] = None
     await interaction.response.send_message("✅ Default status loop re-enabled.", ephemeral=True)
 
-# ---------- Purge Command ----------
+# ---------- Purge Command (Fixed) ----------
 @client.tree.command(name="purge", description="Delete a number of messages from the current channel (Admin only)")
 @app_commands.describe(number="How many messages to delete (max 100)")
 @app_commands.choices(number=[
@@ -181,8 +181,11 @@ async def purge(interaction: discord.Interaction, number: int):
     if number < 1 or number > 100:
         return await interaction.response.send_message("❌ Please choose between 1–100 messages.", ephemeral=True)
 
-    await interaction.channel.purge(limit=number)
-    await interaction.response.send_message(f"✅ Deleted {number} messages.", ephemeral=True)
+    # Defer response to avoid "did not respond" error
+    await interaction.response.defer(ephemeral=True)
+
+    deleted = await interaction.channel.purge(limit=number)
+    await interaction.followup.send(f"✅ Deleted {len(deleted)} messages.", ephemeral=True)
 
 # ---------- Counter Command ----------
 async def category_autocomplete(interaction: discord.Interaction, current: str):
