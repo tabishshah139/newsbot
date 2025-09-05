@@ -1,4 +1,4 @@
-# bot.py — Perfect Rank System with External Auto Messages
+# bot.py — Perfect Rank System with All Fixes
 import os
 import re
 import json
@@ -13,18 +13,18 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 import asyncpg
 from asyncpg.pool import Pool
-import aiohttp  # Added for GitHub API
+import aiohttp
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID_ENV = os.getenv("GUILD_ID")
+AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL")  # URL to your GitHub raw content
 DATABASE_URL = os.getenv("DATABASE_URL")
 XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 1800  # 1800 seconds = 30 minutes ✅
-AUTO_MESSAGES_URL = os.getenv("AUTO_MESSAGES_URL", "https://raw.githubusercontent.com/your-username/your-repo/main/automsg.json")
+AUTO_INTERVAL = 300
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
@@ -57,6 +57,7 @@ recent_channels = {}
 last_joined_member = {}
 custom_status = {}
 counter_channels = {}
+AUTO_MESSAGES = []
 REPORT_CHANNELS = {}
 db_pool: Pool = None
 
@@ -123,25 +124,39 @@ def parse_message_link(link: str):
         return None
     return match.group(1), match.group(2), match.group(3)
 
-# ---------- Load auto messages from GitHub ----------
-async def load_auto_messages_from_github():
+# ---------- Load auto messages from external URL ----------
+async def load_auto_messages_from_url():
+    global AUTO_MESSAGES
+    if not AUTO_FILE_URL:
+        print("⚠️ AUTO_FILE_URL not set - auto messages will be empty")
+        AUTO_MESSAGES = []
+        return
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(AUTO_MESSAGES_URL) as response:
+            async with session.get(AUTO_FILE_URL) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    if isinstance(data, list):
-                        print(f"✅ Loaded {len(data)} auto messages from GitHub")
-                        return data
-                    else:
-                        print("⚠️ GitHub file format invalid - expected list")
-                        return []
+                    content = await response.text()
+                    # Try to parse as JSON first
+                    try:
+                        data = json.loads(content)
+                        if isinstance(data, list):
+                            AUTO_MESSAGES = data
+                            print(f"✅ Loaded {len(AUTO_MESSAGES)} auto messages from URL")
+                            return
+                    except json.JSONDecodeError:
+                        pass
+                    
+                    # If not JSON, try to parse as plain text with one message per line
+                    messages = [line.strip() for line in content.split('\n') if line.strip()]
+                    AUTO_MESSAGES = messages
+                    print(f"✅ Loaded {len(AUTO_MESSAGES)} auto messages from URL")
                 else:
-                    print(f"⚠️ Failed to load from GitHub: {response.status}")
-                    return []
+                    print(f"⚠️ Failed to load auto messages from URL: HTTP {response.status}")
+                    AUTO_MESSAGES = []
     except Exception as e:
-        print(f"⚠️ Error loading auto messages from GitHub: {e}")
-        return []
+        print(f"⚠️ Error loading auto messages from URL: {e}")
+        AUTO_MESSAGES = []
 
 # ---------- Load bad words ----------
 try:
@@ -166,7 +181,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
         for cid in recent_channels[user_id][guild.id][:10]:
             ch = guild.get_channel(cid)
             if ch and current.lower() in ch.name.lower():
-                choices.append(app_commands.Choice(name=f"⭐ {ch.name", value=str(ch.id)))
+                choices.append(app_commands.Choice(name=f"⭐ {ch.name}", value=str(ch.id)))
     for ch in guild.text_channels:
         if current.lower() in ch.name.lower():
             choices.append(app_commands.Choice(name=ch.name, value=str(ch.id)))
@@ -461,24 +476,17 @@ async def auto_message_task():
     channel = client.get_channel(AUTO_CHANNEL_ID)
     if not channel:
         print(f"⚠️ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
-        return
-    
     while not client.is_closed():
         try:
-            # ✅ Load fresh messages every time from GitHub
-            auto_messages = await load_auto_messages_from_github()
-            
-            if auto_messages:
-                msg = random.choice(auto_messages)
-                await channel.send(msg)
-                print(f"✅ Sent auto message: {msg[:50]}...")
-            else:
-                print("⚠️ No auto messages found in GitHub file")
+            # Reload messages from URL periodically (every 6 hours)
+            if AUTO_FILE_URL and int(time.time()) % 21600 == 0:
+                await load_auto_messages_from_url()
                 
+            if AUTO_MESSAGES:
+                msg = random.choice(AUTO_MESSAGES)
+                await channel.send(msg)
         except Exception as e:
             print(f"⚠️ auto_message_task error: {e}")
-        
-        # ✅ 30 minutes interval (1800 seconds)
         await asyncio.sleep(AUTO_INTERVAL)
 
 # ---------- Daily reset (cron Asia/Karachi 00:00) ----------
@@ -734,6 +742,88 @@ async def on_message(message: discord.Message):
         except Exception:
             pass
 
+# ---------- Enhanced Rank Command ----------
+@tree.command(name="rank", description="Show your rank and level")
+async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    if interaction.guild is None:
+        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+    
+    row = await get_user_row(interaction.guild.id, member.id)
+    total_xp = row['total_xp']
+    daily_xp = row['daily_xp']
+    
+    lvl = compute_level_from_total_xp(total_xp)
+    
+    forced_rank = await get_manual_rank(interaction.guild.id, member.id)
+    if forced_rank:
+        rank_name = forced_rank
+        rank_source = " (Admin Set)"
+    else:
+        rank_name = None
+        for r, thresh in RANKS:
+            if daily_xp >= thresh:
+                rank_name = r
+                break
+        rank_source = ""
+
+    current_level_xp = total_xp_to_reach_level(lvl)
+    next_level_xp = total_xp_to_reach_level(lvl + 1)
+    xp_progress = total_xp - current_level_xp
+    xp_needed = next_level_xp - current_level_xp
+    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
+    
+    rank_emoji = RANK_EMOJIS.get(rank_name, "🔹")
+    embed_color = RANK_COLORS.get(rank_name, discord.Color.blurple())
+    
+    embed = discord.Embed(
+        title=f"{rank_emoji} {member.display_name}'s Rank Stats",
+        color=embed_color,
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    embed.set_thumbnail(url=member.display_avatar.url)
+    
+    rank_value = f"{rank_emoji} **{rank_name}**{rank_source}" if rank_name else "🔸 **No Rank Yet**"
+    embed.add_field(name="🏆 Current Rank", value=rank_value, inline=True)
+    
+    embed.add_field(name="📈 Level", value=f"**{lvl}**", inline=True)
+    
+    embed.add_field(name="💎 Total XP", value=f"**{total_xp}**", inline=True)
+    
+    filled_blocks = int(progress_percentage / 10)
+    progress_bar = "🟩" * filled_blocks + "⬜" * (10 - filled_blocks)
+    
+    embed.add_field(
+        name="🚀 Level Progress", 
+        value=f"{progress_bar}\n**{xp_progress}**/{xp_needed} XP (**{progress_percentage:.1f}%**)",
+        inline=False
+    )
+    
+    embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**", inline=True)
+    
+    next_rank = None
+    if rank_name:
+        current_rank_index = RANK_ORDER.index(rank_name)
+        if current_rank_index > 0:
+            next_rank = RANKS[current_rank_index - 1]
+    else:
+        next_rank = RANKS[-1]
+    
+    if next_rank:
+        xp_needed = max(0, next_rank[1] - daily_xp)
+        next_emoji = RANK_EMOJIS.get(next_rank[0], "⚡")
+        embed.add_field(
+            name=f"{next_emoji} Next Rank", 
+            value=f"**{next_rank[0]}** - {xp_needed} XP needed",
+            inline=True
+        )
+    
+    rank_info = " | ".join([f"{r}: {t} XP" for r, t in RANKS])
+    embed.set_footer(text=f"Rank Requirements: {rank_info}")
+    
+    await interaction.response.send_message(embed=embed)
+
 # ---------- Enhanced Leaderboard Command ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
@@ -841,6 +931,9 @@ async def resetleaderboard(interaction: discord.Interaction):
 async def on_ready():
     await init_db()
     
+    # Load auto messages from external URL
+    await load_auto_messages_from_url()
+    
     try:
         if not hasattr(client, 'commands_synced'):
             await tree.sync()
@@ -872,4 +965,3 @@ if __name__ == "__main__":
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
-
