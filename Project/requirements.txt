@@ -1,11 +1,4 @@
 discord.py
 python-dotenv
 discord.py[voice]
-
-
-
-
-
-
-
-
+apscheduler
