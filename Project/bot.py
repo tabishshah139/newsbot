@@ -1,4 +1,4 @@
-# bot.py — PostgreSQL version with XP/Level/Rank/Leaderboard
+# bot.py — Perfect Rank System with Notifications
 import os
 import re
 import json
@@ -28,9 +28,18 @@ BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
 
-# Rank thresholds
-RANKS = [("S+", 400), ("A", 350), ("B", 300), ("C", 250), ("D", 200), ("E", 150)]
+# Rank thresholds (EASY PROGRESSION)
+RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
 RANK_ORDER = [r[0] for r in RANKS]
+RANK_EMOJIS = {"S+": "🌟", "A": "🔥", "B": "⭐", "C": "💫", "D": "✨", "E": "🔶"}
+RANK_COLORS = {
+    "S+": discord.Color.gold(),
+    "A": discord.Color.red(), 
+    "B": discord.Color.orange(),
+    "C": discord.Color.blue(),
+    "D": discord.Color.green(),
+    "E": discord.Color.light_grey()
+}
 ROLE_PREFIX = ""
 
 # ---------- Intents / Client / Tree ----------
@@ -58,7 +67,6 @@ async def init_db():
         print("✅ Connected to PostgreSQL database")
         
         async with db_pool.acquire() as conn:
-            # Create users table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     guild_id BIGINT,
@@ -72,7 +80,6 @@ async def init_db():
                 )
             """)
             
-            # Create manual_ranks table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS manual_ranks (
                     guild_id BIGINT,
@@ -184,18 +191,12 @@ async def channeltype_autocomplete(interaction: discord.Interaction, current: st
 
 # ---------- XP / Level mechanics ----------
 def xp_for_message(message_content: str) -> int:
-    base = 5
-    extra = len(message_content) // 50
+    base = 10  # Balanced base XP
+    extra = min(len(message_content) // 15, 20)  # Reasonable extra XP
     return base + extra
 
 def required_xp_for_level(level: int) -> int:
-    req = 50
-    if level == 1:
-        return req
-    for _ in range(2, level + 1):
-        inc = max(25, int(req * 0.15))
-        req += inc
-    return req
+    return 50 * (level ** 2) + 100  # Better progression
 
 def total_xp_to_reach_level(level: int) -> int:
     total = 0
@@ -205,13 +206,57 @@ def total_xp_to_reach_level(level: int) -> int:
 
 def compute_level_from_total_xp(total_xp: int) -> int:
     level = 0
-    while True:
-        next_total = total_xp_to_reach_level(level + 1)
-        if total_xp >= next_total:
-            level += 1
-        else:
-            break
+    while total_xp >= total_xp_to_reach_level(level + 1):
+        level += 1
     return level
+
+# ---------- Level Up Notification ----------
+async def send_level_up_notification(member: discord.Member, old_level: int, new_level: int):
+    if new_level > old_level:
+        channel = member.guild.system_channel or discord.utils.get(member.guild.text_channels, name="general")
+        if channel and channel.permissions_for(member.guild.me).send_messages:
+            embed = discord.Embed(
+                title="🎉 LEVEL UP!",
+                description=f"{member.mention} has reached **Level {new_level}**!",
+                color=discord.Color.gold(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="Previous Level", value=f"Level {old_level}", inline=True)
+            embed.add_field(name="New Level", value=f"Level {new_level}", inline=True)
+            embed.add_field(name="Congratulations!", value="Keep chatting to level up more! 🚀", inline=False)
+            embed.set_footer(text="Level System")
+            
+            await channel.send(embed=embed)
+
+# ---------- Rank Up Notification ----------
+async def send_rank_up_notification(member: discord.Member, old_rank: str, new_rank: str):
+    if new_rank != old_rank:
+        channel = member.guild.system_channel or discord.utils.get(member.guild.text_channels, name="general")
+        if channel and channel.permissions_for(member.guild.me).send_messages:
+            rank_emoji = RANK_EMOJIS.get(new_rank, "🏆")
+            embed = discord.Embed(
+                title=f"{rank_emoji} RANK UP!",
+                description=f"{member.mention} has achieved **{new_rank} Rank**!",
+                color=RANK_COLORS.get(new_rank, discord.Color.blue()),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            
+            if old_rank:
+                embed.add_field(name="Previous Rank", value=old_rank, inline=True)
+            else:
+                embed.add_field(name="Previous Rank", value="No Rank", inline=True)
+                
+            embed.add_field(name="New Rank", value=new_rank, inline=True)
+            embed.add_field(name="Achievement", value="Great job! Keep up the activity! 💪", inline=False)
+            
+            if new_rank == "S+":
+                embed.add_field(name="Elite Status", value="You've reached the highest rank! 🏆", inline=False)
+            
+            embed.set_footer(text="Rank System")
+            
+            await channel.send(embed=embed)
 
 # ---------- DB helpers ----------
 async def add_message(guild_id: int, user_id: int, xp: int, channel_id: int):
@@ -234,8 +279,8 @@ async def get_user_row(guild_id: int, user_id: int):
         row = await conn.fetchrow("""
             SELECT total_xp, daily_msgs, daily_xp 
             FROM users 
-            WHERE guild_id=$1 AND user_id=$2 AND channel_id=$3
-        """, guild_id, user_id, XP_CHANNEL_ID)
+            WHERE guild_id=$1 AND user_id=$2
+        """, guild_id, user_id)
         
         if not row:
             return {"total_xp": 0, "daily_msgs": 0, "daily_xp": 0}
@@ -274,7 +319,11 @@ async def get_or_create_role(guild: discord.Guild, rank_name: str):
     if role:
         return role
     try:
-        role = await guild.create_role(name=role_name, reason="Auto-created rank role")
+        role = await guild.create_role(
+            name=role_name, 
+            reason="Auto-created rank role",
+            color=RANK_COLORS.get(rank_name, discord.Color.default())
+        )
         return role
     except Exception as e:
         print(f"⚠️ Could not create role {role_name}: {e}")
@@ -311,45 +360,16 @@ async def evaluate_and_update_member_rank(guild: discord.Guild, member: discord.
         if daily_xp >= thresh:
             target_rank = rank
             break
+    
     await remove_rank_roles_from_member(guild, member)
+    
     if target_rank:
         await assign_rank_role_for_member(guild, member, target_rank)
+    
     return target_rank
 
 # ---------- Leaderboard cache ----------
 leaderboard_cache = {}
-async def build_leaderboard_embed(guild: discord.Guild):
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT user_id, daily_xp, total_xp 
-            FROM users 
-            WHERE guild_id=$1 AND channel_id=$2 
-            ORDER BY daily_xp DESC 
-            LIMIT 20
-        """, guild.id, XP_CHANNEL_ID)
-    
-    embed = discord.Embed(title=f"{guild.name} — Leaderboard (Top 20 by 24h XP)", timestamp=datetime.now(timezone.utc))
-    try:
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-    except Exception:
-        pass
-    
-    desc = ""
-    rank_num = 1
-    for row in rows:
-        uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
-        member = guild.get_member(uid)
-        name = member.display_name if member else f"User ID {uid}"
-        lvl = compute_level_from_total_xp(txp)
-        desc += f"**{rank_num}. {name}** — {dxp} XP (24h) • {txp} XP total • Lv {lvl}\n"
-        rank_num += 1
-    
-    if not desc:
-        desc = "No activity yet."
-    embed.description = desc
-    embed.set_footer(text="XP = earned per message; Ranks based on 24h XP thresholds")
-    return embed
 
 # ---------- STATUS / COUNTER / AUTO TASKS ----------
 async def status_loop():
@@ -432,11 +452,12 @@ async def evaluate_and_reset_for_guild(guild: discord.Guild):
             continue
         try:
             await evaluate_and_update_member_rank(guild, member, dxp)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ Rank update error for {member}: {e}")
     
     await reset_all_daily(guild.id)
     leaderboard_cache.pop(guild.id, None)
+    print(f"✅ Daily reset completed for {guild.name}")
 
 async def reset_daily_ranks_async():
     for guild in client.guilds:
@@ -638,7 +659,7 @@ async def on_message(message: discord.Message):
     except Exception:
         pass
 
-    # ✅ Check if message is in XP channel
+    # Check if message is in XP channel
     if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
         return
 
@@ -687,13 +708,40 @@ async def on_message(message: discord.Message):
 
     # XP & daily tracking
     try:
+        # Get old data for comparison
+        old_data = await get_user_row(message.guild.id, message.author.id)
+        old_level = compute_level_from_total_xp(old_data['total_xp'])
+        old_rank = None
+        for r, thresh in RANKS:
+            if old_data['daily_xp'] >= thresh:
+                old_rank = r
+                break
+
+        # Add new XP
         xp = xp_for_message(message.content)
         await add_message(message.guild.id, message.author.id, xp, message.channel.id)
-        row = await get_user_row(message.guild.id, message.author.id)
-        try:
-            await evaluate_and_update_member_rank(message.guild, message.author, row['daily_xp'])
-        except Exception:
-            pass
+        
+        # Get new data
+        new_data = await get_user_row(message.guild.id, message.author.id)
+        new_level = compute_level_from_total_xp(new_data['total_xp'])
+        
+        # Check for rank update
+        new_rank = None
+        for r, thresh in RANKS:
+            if new_data['daily_xp'] >= thresh:
+                new_rank = r
+                break
+        
+        # Update roles based on new rank
+        current_rank = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
+        
+        # Send notifications if level or rank changed
+        if new_level > old_level:
+            await send_level_up_notification(message.author, old_level, new_level)
+        
+        if new_rank != old_rank:
+            await send_rank_up_notification(message.author, old_rank, new_rank)
+            
     except Exception as e:
         print("⚠️ XP add error:", e)
 
@@ -704,20 +752,7 @@ async def on_message(message: discord.Message):
         except Exception:
             pass
 
-# ---------- LEADERBOARD & RANK Commands ----------
-@tree.command(name="leaderboard", description="Show server leaderboard (Top 20 by 24h XP)")
-async def leaderboard(interaction: discord.Interaction):
-    guild = interaction.guild
-    if not guild:
-        return await interaction.response.send_message("Guild-only.", ephemeral=True)
-    now_ts = time.time()
-    cache = leaderboard_cache.get(guild.id)
-    if cache and now_ts - cache[0] < 60:
-        return await interaction.response.send_message(embed=cache[1])
-    embed = await build_leaderboard_embed(guild)
-    leaderboard_cache[guild.id] = (now_ts, embed)
-    await interaction.response.send_message(embed=embed)
-
+# ---------- Enhanced Rank Command ----------
 @tree.command(name="rank", description="Show your rank and level")
 async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
@@ -725,23 +760,157 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         return await interaction.response.send_message("Guild-only.", ephemeral=True)
     
     row = await get_user_row(interaction.guild.id, member.id)
-    lvl = compute_level_from_total_xp(row['total_xp'])
-    rank_name = None
-    forced = await get_manual_rank(interaction.guild.id, member.id)
-    if forced:
-        rank_name = forced
+    total_xp = row['total_xp']
+    daily_xp = row['daily_xp']
+    
+    lvl = compute_level_from_total_xp(total_xp)
+    
+    # Get current rank
+    forced_rank = await get_manual_rank(interaction.guild.id, member.id)
+    if forced_rank:
+        rank_name = forced_rank
+        rank_source = " (Admin Set)"
     else:
+        rank_name = None
         for r, thresh in RANKS:
-            if row['daily_xp'] >= thresh:
+            if daily_xp >= thresh:
                 rank_name = r
                 break
-    embed = discord.Embed(title=f"{member.display_name}'s Rank", color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
+        rank_source = ""
+
+    # Calculate progress
+    current_level_xp = total_xp_to_reach_level(lvl)
+    next_level_xp = total_xp_to_reach_level(lvl + 1)
+    xp_progress = total_xp - current_level_xp
+    xp_needed = next_level_xp - current_level_xp
+    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
+    
+    # Create beautiful embed
+    rank_emoji = RANK_EMOJIS.get(rank_name, "🔹")
+    embed_color = RANK_COLORS.get(rank_name, discord.Color.blurple())
+    
+    embed = discord.Embed(
+        title=f"{rank_emoji} {member.display_name}'s Rank Stats",
+        color=embed_color,
+        timestamp=datetime.now(timezone.utc)
+    )
+    
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="Rank (24h)", value=rank_name or "None", inline=True)
-    embed.add_field(name="Level", value=str(lvl), inline=True)
-    embed.add_field(name="Total XP", value=str(row['total_xp']), inline=True)
-    embed.add_field(name="24h XP", value=str(row['daily_xp']), inline=True)
+    
+    # Rank section
+    rank_value = f"{rank_emoji} **{rank_name}**{rank_source}" if rank_name else "🔸 **No Rank Yet**"
+    embed.add_field(name="🏆 Current Rank", value=rank_value, inline=True)
+    
+    # Level section
+    embed.add_field(name="📈 Level", value=f"**{lvl}**", inline=True)
+    
+    # XP section
+    embed.add_field(name="💎 Total XP", value=f"**{total_xp}**", inline=True)
+    
+    # Progress bar (visual)
+    filled_blocks = int(progress_percentage / 10)
+    progress_bar = "🟩" * filled_blocks + "⬜" * (10 - filled_blocks)
+    
+    embed.add_field(
+        name="🚀 Level Progress", 
+        value=f"{progress_bar}\n**{xp_progress}**/{xp_needed} XP (**{progress_percentage:.1f}%**)",
+        inline=False
+    )
+    
+    # Daily XP
+    embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**", inline=True)
+    
+    # Next rank info
+    next_rank = None
+    if rank_name:
+        current_rank_index = RANK_ORDER.index(rank_name)
+        if current_rank_index > 0:
+            next_rank = RANKS[current_rank_index - 1]
+    else:
+        next_rank = RANKS[-1]  # Start from E rank
+    
+    if next_rank:
+        xp_needed = max(0, next_rank[1] - daily_xp)
+        next_emoji = RANK_EMOJIS.get(next_rank[0], "⚡")
+        embed.add_field(
+            name=f"{next_emoji} Next Rank", 
+            value=f"**{next_rank[0]}** - {xp_needed} XP needed",
+            inline=True
+        )
+    
+    # Rank requirements info
+    rank_info = " | ".join([f"{r}: {t} XP" for r, t in RANKS])
+    embed.set_footer(text=f"Rank Requirements: {rank_info}")
+    
     await interaction.response.send_message(embed=embed)
+
+# ---------- Enhanced Leaderboard Command ----------
+@tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
+async def leaderboard(interaction: discord.Interaction):
+    guild = interaction.guild
+    if not guild:
+        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+    
+    now_ts = time.time()
+    cache = leaderboard_cache.get(guild.id)
+    if cache and now_ts - cache[0] < 60:
+        return await interaction.response.send_message(embed=cache[1])
+    
+    embed = await build_leaderboard_embed(guild)
+    leaderboard_cache[guild.id] = (now_ts, embed)
+    await interaction.response.send_message(embed=embed)
+
+async def build_leaderboard_embed(guild: discord.Guild):
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT user_id, daily_xp, total_xp 
+            FROM users 
+            WHERE guild_id=$1
+            ORDER BY daily_xp DESC 
+            LIMIT 15
+        """, guild.id)
+    
+    embed = discord.Embed(
+        title=f"🏆 {guild.name} — Daily Leaderboard", 
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    
+    desc = ""
+    medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "⑪", "⑫", "⑬", "⑭", "⑮"]
+    
+    for idx, row in enumerate(rows):
+        uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
+        member = guild.get_member(uid)
+        name = member.display_name if member else f"User {uid}"
+        lvl = compute_level_from_total_xp(txp)
+        
+        # Get rank for this user
+        user_rank = None
+        for r, thresh in RANKS:
+            if dxp >= thresh:
+                user_rank = r
+                break
+        
+        rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
+        medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
+        
+        desc += f"{medal} {rank_emoji} **{name}**\n"
+        desc += f"   ⭐ {dxp} XP (24h) • 📈 Lv {lvl} • 💎 {txp} Total XP\n\n"
+    
+    if not desc:
+        desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
+    
+    embed.description = desc
+    
+    # Add quick rank guide
+    rank_guide = " | ".join([f"{RANK_EMOJIS.get(r, '')} {r}" for r in RANK_ORDER])
+    embed.set_footer(text=f"Ranks: {rank_guide} | Reset daily at 12:00 AM PKT")
+    
+    return embed
 
 # ---------- Admin Rank Commands ----------
 @tree.command(name="addrank", description="Admin: force a rank to a user")
