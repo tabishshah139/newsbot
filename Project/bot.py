@@ -20,7 +20,7 @@ tree = app_commands.CommandTree(client)
 STATUS_LIST = ["Managing the server", "Protecting the chat", "Counting members 👥", "Automating tasks 🤖"]
 
 AUTO_CHANNEL_ID = 1412316924536422405  # Final auto-message channel ID
-AUTO_INTERVAL = 300  # 5 minutes
+AUTO_INTERVAL = 10  # 5 minutes
 AUTO_FILE = "automsg.json"
 
 REPORT_CHANNEL_ID = None  # set dynamically by /setreport
@@ -199,3 +199,4 @@ async def on_ready():
     print(f"✅ Logged in as {client.user}")
     client.loop.create_task(status_task())
     client.loop.create_task(auto_message_task())
+
