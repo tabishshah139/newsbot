@@ -4,3 +4,4 @@ discord.py[voice]
 apscheduler
 pytz
 asyncpg
+aiohttp 
