@@ -1,4 +1,4 @@
-# bot.py — Final merged version (status loop + all features)
+# bot.py — Final merged version with XP/Level/Rank/Leaderboard and daily reset (Asia/Karachi)
 import os
 import re
 import json
@@ -7,18 +7,28 @@ import asyncio
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
+import sqlite3
+import time
+from datetime import datetime, timezone
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import pytz
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID_ENV = os.getenv("GUILD_ID")  # optional: prefer using this for status member count
+GUILD_ID_ENV = os.getenv("GUILD_ID")  # optional
 AUTO_FILE = os.getenv("AUTO_FILE", "automsg.json")
 
 # ---------- Config (change if needed) ----------
-AUTO_CHANNEL_ID = 1412316924536422405  # as you gave
+AUTO_CHANNEL_ID = 1412316924536422405  # change if needed
 AUTO_INTERVAL = 300  # seconds (5 min)
 BYPASS_ROLE = "Basic"  # role name that bypasses filters
-STATUS_SWITCH_SECONDS = 10  # 10 seconds between the two statuses
-COUNTER_UPDATE_SECONDS = 5  # counter update frequency
+STATUS_SWITCH_SECONDS = 10
+COUNTER_UPDATE_SECONDS = 5
+
+# Rank thresholds (DAILY XP thresholds)
+RANKS = [("S+", 400), ("A", 350), ("B", 300), ("C", 250), ("D", 200), ("E", 150)]
+RANK_ORDER = [r[0] for r in RANKS]
+ROLE_PREFIX = ""  # set if you want "Rank - S+" style
 
 # ---------- Intents / Client / Tree ----------
 intents = discord.Intents.default()
@@ -29,12 +39,37 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 # ---------- In-memory stores ----------
-recent_channels = {}            # {user_id: {guild_id: [channel_ids]}}
-last_joined_member = {}         # {guild_id: member_name}
-custom_status = {}              # {guild_id: status_string or None}
-counter_channels = {}           # {guild_id: {channel_id: base_name}}
-AUTO_MESSAGES = []              # loaded from AUTO_FILE
-REPORT_CHANNELS = {}            # {guild_id: channel_id}
+recent_channels = {}
+last_joined_member = {}
+custom_status = {}
+counter_channels = {}
+AUTO_MESSAGES = []
+REPORT_CHANNELS = {}
+
+# ---------- DB (SQLite) ----------
+DB_PATH = "ranker.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cur = conn.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+  guild_id INTEGER,
+  user_id INTEGER,
+  total_xp INTEGER DEFAULT 0,
+  daily_msgs INTEGER DEFAULT 0,
+  daily_xp INTEGER DEFAULT 0,
+  last_message_ts INTEGER DEFAULT 0,
+  PRIMARY KEY (guild_id, user_id)
+)
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS manual_ranks (
+  guild_id INTEGER,
+  user_id INTEGER,
+  forced_rank TEXT,
+  PRIMARY KEY (guild_id, user_id)
+)
+""")
+conn.commit()
 
 # ---------- Helpers ----------
 def update_recent_channel(user_id: int, guild_id: int, channel_id: int):
@@ -103,14 +138,12 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
     guild = interaction.guild
     if not guild:
         return []
-    # recent channels first
     user_id = interaction.user.id
     if user_id in recent_channels and guild.id in recent_channels[user_id]:
         for cid in recent_channels[user_id][guild.id][:10]:
             ch = guild.get_channel(cid)
             if ch and current.lower() in ch.name.lower():
                 choices.append(app_commands.Choice(name=f"⭐ {ch.name}", value=str(ch.id)))
-    # then guild text channels
     for ch in guild.text_channels:
         if current.lower() in ch.name.lower():
             choices.append(app_commands.Choice(name=ch.name, value=str(ch.id)))
@@ -133,10 +166,158 @@ async def channeltype_autocomplete(interaction: discord.Interaction, current: st
     options = [("Text Channel", "text"), ("Voice Channel", "voice")]
     return [app_commands.Choice(name=n, value=v) for n, v in options if current.lower() in n.lower()][:15]
 
-# ---------- STATUS LOOP (member-based) ----------
+# ---------- XP / Level mechanics ----------
+def xp_for_message(message_content: str) -> int:
+    base = 5
+    extra = len(message_content) // 50
+    return base + extra
+
+def required_xp_for_level(level: int) -> int:
+    # level=1 -> 50
+    req = 50
+    if level == 1:
+        return req
+    for _ in range(2, level + 1):
+        inc = max(25, int(req * 0.15))
+        req += inc
+    return req
+
+def total_xp_to_reach_level(level: int) -> int:
+    total = 0
+    for L in range(1, level + 1):
+        total += required_xp_for_level(L)
+    return total
+
+def compute_level_from_total_xp(total_xp: int) -> int:
+    level = 0
+    while True:
+        next_total = total_xp_to_reach_level(level + 1)
+        if total_xp >= next_total:
+            level += 1
+        else:
+            break
+    return level
+
+# ---------- DB helpers ----------
+def add_message(guild_id: int, user_id: int, xp: int):
+    now = int(time.time())
+    with conn:
+        cur.execute("INSERT OR IGNORE INTO users (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+        cur.execute("""
+            UPDATE users SET
+              total_xp = total_xp + ?,
+              daily_xp = daily_xp + ?,
+              daily_msgs = daily_msgs + 1,
+              last_message_ts = ?
+            WHERE guild_id = ? AND user_id = ?
+        """, (xp, xp, now, guild_id, user_id))
+
+def get_user_row(guild_id: int, user_id: int):
+    cur.execute("SELECT total_xp, daily_msgs, daily_xp FROM users WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+    r = cur.fetchone()
+    if not r:
+        return {"total_xp":0, "daily_msgs":0, "daily_xp":0}
+    return {"total_xp": r[0], "daily_msgs": r[1], "daily_xp": r[2]}
+
+def reset_all_daily(guild_id: int):
+    with conn:
+        cur.execute("UPDATE users SET daily_msgs=0, daily_xp=0 WHERE guild_id=?", (guild_id,))
+
+def reset_user_all(guild_id:int, user_id:int):
+    with conn:
+        cur.execute("DELETE FROM users WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+
+def force_set_manual_rank(guild_id:int, user_id:int, rank_str:str):
+    with conn:
+        cur.execute("INSERT OR REPLACE INTO manual_ranks (guild_id, user_id, forced_rank) VALUES (?, ?, ?)", (guild_id, user_id, rank_str))
+
+def get_manual_rank(guild_id:int, user_id:int):
+    cur.execute("SELECT forced_rank FROM manual_ranks WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+    r = cur.fetchone()
+    return r[0] if r else None
+
+def clear_manual_rank(guild_id:int, user_id:int):
+    with conn:
+        cur.execute("DELETE FROM manual_ranks WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+
+# ---------- Role management ----------
+async def get_or_create_role(guild: discord.Guild, rank_name: str):
+    role_name = f"{ROLE_PREFIX}{rank_name}"
+    role = discord.utils.get(guild.roles, name=role_name)
+    if role:
+        return role
+    try:
+        role = await guild.create_role(name=role_name, reason="Auto-created rank role")
+        return role
+    except Exception as e:
+        print(f"⚠️ Could not create role {role_name}: {e}")
+        return None
+
+async def remove_rank_roles_from_member(guild: discord.Guild, member: discord.Member):
+    for rn in RANK_ORDER:
+        r = discord.utils.get(guild.roles, name=f"{ROLE_PREFIX}{rn}")
+        if r and r in member.roles:
+            try:
+                await member.remove_roles(r)
+            except Exception:
+                pass
+
+async def assign_rank_role_for_member(guild: discord.Guild, member: discord.Member, rank_name: str):
+    if not rank_name:
+        return
+    role = await get_or_create_role(guild, rank_name)
+    if role:
+        try:
+            await member.add_roles(role)
+        except Exception:
+            pass
+
+async def evaluate_and_update_member_rank(guild: discord.Guild, member: discord.Member, daily_xp: int):
+    forced = get_manual_rank(guild.id, member.id)
+    if forced:
+        await remove_rank_roles_from_member(guild, member)
+        await assign_rank_role_for_member(guild, member, forced)
+        return forced
+
+    target_rank = None
+    for rank, thresh in RANKS:
+        if daily_xp >= thresh:
+            target_rank = rank
+            break
+    await remove_rank_roles_from_member(guild, member)
+    if target_rank:
+        await assign_rank_role_for_member(guild, member, target_rank)
+    return target_rank
+
+# ---------- Leaderboard cache ----------
+leaderboard_cache = {}  # guild_id -> (ts, embed)
+def build_leaderboard_embed(guild: discord.Guild):
+    cur.execute("SELECT user_id, daily_xp, total_xp FROM users WHERE guild_id=? ORDER BY daily_xp DESC LIMIT 20", (guild.id,))
+    rows = cur.fetchall()
+    from discord import Embed
+    embed = Embed(title=f"{guild.name} — Leaderboard (Top 20 by 24h XP)", timestamp=datetime.now(timezone.utc))
+    try:
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+    except Exception:
+        pass
+    desc = ""
+    rank_num = 1
+    for uid, dxp, txp in rows:
+        member = guild.get_member(uid)
+        name = member.display_name if member else f"User ID {uid}"
+        lvl = compute_level_from_total_xp(txp)
+        desc += f"**{rank_num}. {name}** — {dxp} XP (24h) • {txp} XP total • Lv {lvl}\n"
+        rank_num += 1
+    if not desc:
+        desc = "No activity yet."
+    embed.description = desc
+    embed.set_footer(text="XP = earned per message; Ranks based on 24h XP thresholds")
+    return embed
+
+# ---------- STATUS / COUNTER / AUTO TASKS ----------
 async def status_loop():
     await client.wait_until_ready()
-    # prefer using provided GUILD_ID env if present
     target_guild = None
     if GUILD_ID_ENV:
         try:
@@ -144,28 +325,19 @@ async def status_loop():
             target_guild = client.get_guild(gid)
         except Exception:
             target_guild = None
-
-    # if not provided, use first guild the bot is in
     while not client.is_closed():
         try:
             guild = target_guild or (client.guilds[0] if client.guilds else None)
             if not guild:
                 await asyncio.sleep(5)
                 continue
-
-            # check if custom status set for this guild
             if custom_status.get(guild.id):
-                # show custom status until cleared
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=custom_status[guild.id]))
                 await asyncio.sleep(STATUS_SWITCH_SECONDS)
                 continue
-
-            # 1) Total members
             count = guild.member_count
             await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Total: {count} Members"))
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
-
-            # 2) Welcome last joined or waiting
             last = last_joined_member.get(guild.id)
             if last:
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
@@ -176,7 +348,6 @@ async def status_loop():
             print(f"⚠️ status_loop error: {e}")
             await asyncio.sleep(5)
 
-# ---------- COUNTER UPDATER ----------
 async def counter_updater():
     await client.wait_until_ready()
     while not client.is_closed():
@@ -198,7 +369,6 @@ async def counter_updater():
             print(f"⚠️ counter_updater error: {e}")
         await asyncio.sleep(COUNTER_UPDATE_SECONDS)
 
-# ---------- AUTO MESSAGE TASK ----------
 async def auto_message_task():
     await client.wait_until_ready()
     channel = client.get_channel(AUTO_CHANNEL_ID)
@@ -214,7 +384,40 @@ async def auto_message_task():
             print(f"⚠️ auto_message_task error: {e}")
         await asyncio.sleep(AUTO_INTERVAL)
 
-# ---------- SLASH COMMANDS ----------
+# ---------- Daily reset (cron Asia/Karachi 00:00) ----------
+async def evaluate_and_reset_for_guild(guild: discord.Guild):
+    cur.execute("SELECT user_id, daily_xp FROM users WHERE guild_id=?", (guild.id,))
+    rows = cur.fetchall()
+    for uid, dxp in rows:
+        member = guild.get_member(uid)
+        if not member:
+            continue
+        try:
+            await evaluate_and_update_member_rank(guild, member, dxp)
+        except Exception:
+            pass
+    reset_all_daily(guild.id)
+    # clear leaderboard cache for guild
+    leaderboard_cache.pop(guild.id, None)
+
+async def reset_daily_ranks_async():
+    # runs in bot event loop
+    for guild in client.guilds:
+        try:
+            await evaluate_and_reset_for_guild(guild)
+        except Exception as e:
+            print(f"⚠️ Daily reset error guild {guild.id}: {e}")
+
+def schedule_daily_reset():
+    tz = pytz.timezone("Asia/Karachi")  # UTC+05:00
+    scheduler = AsyncIOScheduler(timezone=tz)
+    # schedule at 00:00 Asia/Karachi every day
+    # we wrap coroutine with asyncio.create_task
+    scheduler.add_job(lambda: asyncio.create_task(reset_daily_ranks_async()), "cron", hour=0, minute=0)
+    scheduler.start()
+    print("✅ Scheduled daily reset (00:00 Asia/Karachi)")
+
+# ---------- SLASH COMMANDS (existing + new) ----------
 @tree.command(name="say", description="Send formatted message to a channel (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
 async def say(interaction: discord.Interaction, channel_id: str, content: str):
@@ -283,9 +486,10 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/setcounter", value="(Admin) Create live counter channel", inline=False)
     embed.add_field(name="/setreport", value="(Admin) Set report logs channel", inline=False)
     embed.add_field(name="/addautomsg / listautomsg / removeautomsg", value="(Admin) Manage auto messages", inline=False)
+    embed.add_field(name="/leaderboard", value="Show Top20 by 24h XP", inline=False)
+    embed.add_field(name="/rank", value="Show your rank, level & XP", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------- PURGE (defer to avoid "app did not respond") ----------
 @tree.command(name="purge", description="Delete messages (Admin only)")
 async def purge(interaction: discord.Interaction, number: int):
     if not interaction.user.guild_permissions.administrator:
@@ -296,7 +500,6 @@ async def purge(interaction: discord.Interaction, number: int):
     deleted = await interaction.channel.purge(limit=number)
     await interaction.followup.send(f"✅ Deleted {len(deleted)} messages.", ephemeral=True)
 
-# ---------- COUNTER ----------
 @tree.command(name="setcounter", description="Create counter channel (Admin only)")
 @app_commands.autocomplete(category_id=category_autocomplete, channel_type=channeltype_autocomplete)
 async def setcounter(interaction: discord.Interaction, category_id: str, channel_name: str, channel_type: str, guild_counter: bool):
@@ -310,7 +513,6 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
     else:
         new_ch = await category.create_text_channel(channel_name)
     if guild_counter:
-        # set initial name and register for updates
         try:
             await new_ch.edit(name=f"{channel_name} {interaction.guild.member_count}")
         except Exception:
@@ -320,7 +522,6 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
         counter_channels[interaction.guild.id][new_ch.id] = channel_name
     await interaction.response.send_message(f"✅ Counter created: {new_ch.mention}", ephemeral=True)
 
-# ---------- STATUS CONTROL ----------
 @tree.command(name="setcustomstatus", description="Set a custom status (Admin only)")
 async def setcustomstatus(interaction: discord.Interaction, message: str):
     if not interaction.user.guild_permissions.administrator:
@@ -336,7 +537,6 @@ async def setdefaultstatus(interaction: discord.Interaction):
     custom_status[interaction.guild.id] = None
     await interaction.response.send_message("✅ Default status loop resumed", ephemeral=True)
 
-# ---------- AUTO MESSAGES (persistent) ----------
 @tree.command(name="addautomsg", description="Add an auto message (Admin only)")
 async def addautomsg(interaction: discord.Interaction, message: str):
     if not interaction.user.guild_permissions.administrator:
@@ -379,7 +579,6 @@ async def removeautomsg(interaction: discord.Interaction, index: str):
     save_auto_messages()
     await interaction.response.send_message(f"🗑️ Removed: `{removed}`", ephemeral=True)
 
-# ---------- REPORTS (logs) ----------
 @tree.command(name="setreport", description="Set report log channel (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
 async def setreport(interaction: discord.Interaction, channel_id: str):
@@ -389,7 +588,7 @@ async def setreport(interaction: discord.Interaction, channel_id: str):
     ch = interaction.guild.get_channel(int(channel_id))
     await interaction.response.send_message(f"✅ Reports will be sent to {ch.mention}", ephemeral=True)
 
-# ---------- MESSAGE FILTER (bad words + links) ----------
+# ---------- MESSAGE FILTER + XP tracking ----------
 @client.event
 async def on_message(message: discord.Message):
     # allow bots and DMs through
@@ -420,7 +619,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.", delete_after=8)
             except Exception:
                 pass
-            # report log if set
             rid = REPORT_CHANNELS.get(message.guild.id)
             if rid:
                 log_ch = message.guild.get_channel(rid)
@@ -451,12 +649,100 @@ async def on_message(message: discord.Message):
                     pass
         return
 
+    # XP & daily tracking (only non-admin, non-bot, non-bypass)
+    try:
+        xp = xp_for_message(message.content)
+        add_message(message.guild.id, message.author.id, xp)
+        row = get_user_row(message.guild.id, message.author.id)
+        try:
+            await evaluate_and_update_member_rank(message.guild, message.author, row['daily_xp'])
+        except Exception:
+            pass
+    except Exception as e:
+        print("⚠️ XP add error:", e)
+
     # text-command fallback (simple ping)
     if message.content.strip().lower().startswith("!ping"):
         try:
             await message.channel.send(f"🏓 Pong! Latency: {round(client.latency * 1000)}ms")
         except Exception:
             pass
+
+# ---------- LEADERBOARD & RANK Commands ----------
+from discord import Embed
+
+@tree.command(name="leaderboard", description="Show server leaderboard (Top 20 by 24h XP)")
+async def leaderboard(interaction: discord.Interaction):
+    guild = interaction.guild
+    if not guild:
+        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+    now_ts = time.time()
+    cache = leaderboard_cache.get(guild.id)
+    if cache and now_ts - cache[0] < 60:
+        return await interaction.response.send_message(embed=cache[1])
+    embed = build_leaderboard_embed(guild)
+    leaderboard_cache[guild.id] = (now_ts, embed)
+    await interaction.response.send_message(embed=embed)
+
+@tree.command(name="rank", description="Show your rank and level")
+async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    if interaction.guild is None:
+        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+    row = get_user_row(interaction.guild.id, member.id)
+    lvl = compute_level_from_total_xp(row['total_xp'])
+    rank_name = None
+    forced = get_manual_rank(interaction.guild.id, member.id)
+    if forced:
+        rank_name = forced
+    else:
+        for r, thresh in RANKS:
+            if row['daily_xp'] >= thresh:
+                rank_name = r
+                break
+    embed = Embed(title=f"{member.display_name}'s Rank", color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Rank (24h)", value=rank_name or "None", inline=True)
+    embed.add_field(name="Level", value=str(lvl), inline=True)
+    embed.add_field(name="Total XP", value=str(row['total_xp']), inline=True)
+    embed.add_field(name="24h XP", value=str(row['daily_xp']), inline=True)
+    await interaction.response.send_message(embed=embed)
+
+# ---------- Admin Rank Commands ----------
+@tree.command(name="addrank", description="Admin: force a rank to a user")
+async def addrank(interaction: discord.Interaction, member: discord.Member, rank: str):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
+    rank = rank.strip()
+    if rank not in RANK_ORDER:
+        return await interaction.response.send_message(f"❌ Invalid rank. Choose from: {', '.join(RANK_ORDER)}", ephemeral=True)
+    force_set_manual_rank(interaction.guild.id, member.id, rank)
+    await remove_rank_roles_from_member(interaction.guild, member)
+    await assign_rank_role_for_member(interaction.guild, member, rank)
+    await interaction.response.send_message("✅ Forced rank applied.", ephemeral=True)
+
+@tree.command(name="removefromleaderboard", description="Admin: remove user from leaderboard (clear XP & ranks)")
+async def removefromleaderboard(interaction: discord.Interaction, member: discord.Member):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
+    reset_user_all(interaction.guild.id, member.id)
+    clear_manual_rank(interaction.guild.id, member.id)
+    await remove_rank_roles_from_member(interaction.guild, member)
+    await interaction.response.send_message("✅ Cleared user data and roles.", ephemeral=True)
+
+@tree.command(name="resetleaderboard", description="Admin: reset entire guild leaderboard (clear all XP & ranks)")
+async def resetleaderboard(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
+    with conn:
+        cur.execute("DELETE FROM users WHERE guild_id=?", (interaction.guild.id,))
+        cur.execute("DELETE FROM manual_ranks WHERE guild_id=?", (interaction.guild.id,))
+    for member in interaction.guild.members:
+        try:
+            await remove_rank_roles_from_member(interaction.guild, member)
+        except Exception:
+            pass
+    await interaction.response.send_message("✅ Guild leaderboard reset.", ephemeral=True)
 
 # ---------- EVENTS ----------
 @client.event
@@ -470,6 +756,7 @@ async def on_ready():
     client.loop.create_task(status_loop())
     client.loop.create_task(counter_updater())
     client.loop.create_task(auto_message_task())
+    schedule_daily_reset()
 
 @client.event
 async def on_member_join(member):
