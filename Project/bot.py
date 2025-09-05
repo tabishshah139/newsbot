@@ -1,4 +1,4 @@
-# bot.py — Perfect Rank System with All Fixes
+# bot.py — Perfect Rank System with External Auto Messages
 import os
 import re
 import json
@@ -13,17 +13,18 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 import asyncpg
 from asyncpg.pool import Pool
+import aiohttp  # Added for GitHub API
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID_ENV = os.getenv("GUILD_ID")
-AUTO_FILE = os.getenv("AUTO_FILE", "automsg.json")
 DATABASE_URL = os.getenv("DATABASE_URL")
 XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 300
+AUTO_INTERVAL = 1800  # 1800 seconds = 30 minutes ✅
+AUTO_MESSAGES_URL = os.getenv("AUTO_MESSAGES_URL", "https://raw.githubusercontent.com/your-username/your-repo/main/automsg.json")
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
@@ -56,7 +57,6 @@ recent_channels = {}
 last_joined_member = {}
 custom_status = {}
 counter_channels = {}
-AUTO_MESSAGES = []
 REPORT_CHANNELS = {}
 db_pool: Pool = None
 
@@ -123,26 +123,25 @@ def parse_message_link(link: str):
         return None
     return match.group(1), match.group(2), match.group(3)
 
-# ---------- Load / Save auto messages ----------
-def load_auto_messages():
+# ---------- Load auto messages from GitHub ----------
+async def load_auto_messages_from_github():
     try:
-        if os.path.exists(AUTO_FILE):
-            with open(AUTO_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
+        async with aiohttp.ClientSession() as session:
+            async with session.get(AUTO_MESSAGES_URL) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if isinstance(data, list):
+                        print(f"✅ Loaded {len(data)} auto messages from GitHub")
+                        return data
+                    else:
+                        print("⚠️ GitHub file format invalid - expected list")
+                        return []
+                else:
+                    print(f"⚠️ Failed to load from GitHub: {response.status}")
+                    return []
     except Exception as e:
-        print(f"⚠️ Failed to load {AUTO_FILE}: {e}")
-    return []
-
-def save_auto_messages():
-    try:
-        with open(AUTO_FILE, "w", encoding="utf-8") as f:
-            json.dump(AUTO_MESSAGES, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"⚠️ Failed to save {AUTO_FILE}: {e}")
-
-AUTO_MESSAGES = load_auto_messages()
+        print(f"⚠️ Error loading auto messages from GitHub: {e}")
+        return []
 
 # ---------- Load bad words ----------
 try:
@@ -167,7 +166,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
         for cid in recent_channels[user_id][guild.id][:10]:
             ch = guild.get_channel(cid)
             if ch and current.lower() in ch.name.lower():
-                choices.append(app_commands.Choice(name=f"⭐ {ch.name}", value=str(ch.id)))
+                choices.append(app_commands.Choice(name=f"⭐ {ch.name", value=str(ch.id)))
     for ch in guild.text_channels:
         if current.lower() in ch.name.lower():
             choices.append(app_commands.Choice(name=ch.name, value=str(ch.id)))
@@ -462,13 +461,24 @@ async def auto_message_task():
     channel = client.get_channel(AUTO_CHANNEL_ID)
     if not channel:
         print(f"⚠️ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
+        return
+    
     while not client.is_closed():
         try:
-            if AUTO_MESSAGES:
-                msg = random.choice(AUTO_MESSAGES)
+            # ✅ Load fresh messages every time from GitHub
+            auto_messages = await load_auto_messages_from_github()
+            
+            if auto_messages:
+                msg = random.choice(auto_messages)
                 await channel.send(msg)
+                print(f"✅ Sent auto message: {msg[:50]}...")
+            else:
+                print("⚠️ No auto messages found in GitHub file")
+                
         except Exception as e:
             print(f"⚠️ auto_message_task error: {e}")
+        
+        # ✅ 30 minutes interval (1800 seconds)
         await asyncio.sleep(AUTO_INTERVAL)
 
 # ---------- Daily reset (cron Asia/Karachi 00:00) ----------
@@ -572,7 +582,6 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/purge", value="(Admin) Delete messages", inline=False)
     embed.add_field(name="/setcounter", value="(Admin) Create live counter channel", inline=False)
     embed.add_field(name="/setreport", value="(Admin) Set report logs channel", inline=False)
-    embed.add_field(name="/addautomsg / listautomsg / removeautomsg", value="(Admin) Manage auto messages", inline=False)
     embed.add_field(name="/leaderboard", value="Show Top20 by 24h XP", inline=False)
     embed.add_field(name="/rank", value="Show your rank, level & XP", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -623,48 +632,6 @@ async def setdefaultstatus(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
     custom_status[interaction.guild.id] = None
     await interaction.response.send_message("✅ Default status loop resumed", ephemeral=True)
-
-@tree.command(name="addautomsg", description="Add an auto message (Admin only)")
-async def addautomsg(interaction: discord.Interaction, message: str):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    AUTO_MESSAGES.append(message)
-    save_auto_messages()
-    await interaction.response.send_message("✅ Auto message added", ephemeral=True)
-
-@tree.command(name="listautomsg", description="List auto messages (Admin only)")
-async def listautomsg(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    if not AUTO_MESSAGES:
-        return await interaction.response.send_message("No auto messages stored.", ephemeral=True)
-    text = "\n".join([f"{i+1}. {m}" for i, m in enumerate(AUTO_MESSAGES)])
-    embed = discord.Embed(title="📜 Auto Messages", description=text, color=discord.Color.blurple())
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-async def auto_message_autocomplete(interaction: discord.Interaction, current: str):
-    choices = []
-    for idx, msg in enumerate(AUTO_MESSAGES, start=1):
-        if current.lower() in msg.lower():
-            choices.append(app_commands.Choice(name=f"{idx}. {msg[:50]}", value=str(idx)))
-        if len(choices) >= 25:
-            break
-    return choices
-
-@tree.command(name="removeautomsg", description="Remove an auto message (Admin only)")
-@app_commands.autocomplete(index=auto_message_autocomplete)
-async def removeautomsg(interaction: discord.Interaction, index: str):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    try:
-        idx = int(index)
-    except Exception:
-        return await interaction.response.send_message("❌ Invalid selection", ephemeral=True)
-    if idx < 1 or idx > len(AUTO_MESSAGES):
-        return await interaction.response.send_message("❌ Index out of range", ephemeral=True)
-    removed = AUTO_MESSAGES.pop(idx - 1)
-    save_auto_messages()
-    await interaction.response.send_message(f"🗑️ Removed: `{removed}`", ephemeral=True)
 
 @tree.command(name="setreport", description="Set report log channel (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
@@ -766,88 +733,6 @@ async def on_message(message: discord.Message):
             await message.channel.send(f"🏓 Pong! Latency: {round(client.latency * 1000)}ms")
         except Exception:
             pass
-
-# ---------- Enhanced Rank Command ----------
-@tree.command(name="rank", description="Show your rank and level")
-async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
-    member = member or interaction.user
-    if interaction.guild is None:
-        return await interaction.response.send_message("Guild-only.", ephemeral=True)
-    
-    row = await get_user_row(interaction.guild.id, member.id)
-    total_xp = row['total_xp']
-    daily_xp = row['daily_xp']
-    
-    lvl = compute_level_from_total_xp(total_xp)
-    
-    forced_rank = await get_manual_rank(interaction.guild.id, member.id)
-    if forced_rank:
-        rank_name = forced_rank
-        rank_source = " (Admin Set)"
-    else:
-        rank_name = None
-        for r, thresh in RANKS:
-            if daily_xp >= thresh:
-                rank_name = r
-                break
-        rank_source = ""
-
-    current_level_xp = total_xp_to_reach_level(lvl)
-    next_level_xp = total_xp_to_reach_level(lvl + 1)
-    xp_progress = total_xp - current_level_xp
-    xp_needed = next_level_xp - current_level_xp
-    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
-    
-    rank_emoji = RANK_EMOJIS.get(rank_name, "🔹")
-    embed_color = RANK_COLORS.get(rank_name, discord.Color.blurple())
-    
-    embed = discord.Embed(
-        title=f"{rank_emoji} {member.display_name}'s Rank Stats",
-        color=embed_color,
-        timestamp=datetime.now(timezone.utc)
-    )
-    
-    embed.set_thumbnail(url=member.display_avatar.url)
-    
-    rank_value = f"{rank_emoji} **{rank_name}**{rank_source}" if rank_name else "🔸 **No Rank Yet**"
-    embed.add_field(name="🏆 Current Rank", value=rank_value, inline=True)
-    
-    embed.add_field(name="📈 Level", value=f"**{lvl}**", inline=True)
-    
-    embed.add_field(name="💎 Total XP", value=f"**{total_xp}**", inline=True)
-    
-    filled_blocks = int(progress_percentage / 10)
-    progress_bar = "🟩" * filled_blocks + "⬜" * (10 - filled_blocks)
-    
-    embed.add_field(
-        name="🚀 Level Progress", 
-        value=f"{progress_bar}\n**{xp_progress}**/{xp_needed} XP (**{progress_percentage:.1f}%**)",
-        inline=False
-    )
-    
-    embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**", inline=True)
-    
-    next_rank = None
-    if rank_name:
-        current_rank_index = RANK_ORDER.index(rank_name)
-        if current_rank_index > 0:
-            next_rank = RANKS[current_rank_index - 1]
-    else:
-        next_rank = RANKS[-1]
-    
-    if next_rank:
-        xp_needed = max(0, next_rank[1] - daily_xp)
-        next_emoji = RANK_EMOJIS.get(next_rank[0], "⚡")
-        embed.add_field(
-            name=f"{next_emoji} Next Rank", 
-            value=f"**{next_rank[0]}** - {xp_needed} XP needed",
-            inline=True
-        )
-    
-    rank_info = " | ".join([f"{r}: {t} XP" for r, t in RANKS])
-    embed.set_footer(text=f"Rank Requirements: {rank_info}")
-    
-    await interaction.response.send_message(embed=embed)
 
 # ---------- Enhanced Leaderboard Command ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
@@ -987,3 +872,4 @@ if __name__ == "__main__":
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
+
