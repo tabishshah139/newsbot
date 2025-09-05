@@ -1,4 +1,4 @@
-# bot.py — Perfect Rank System with Admin XP Fix
+# bot.py — Perfect Rank System with Advanced Notifications
 import os
 import re
 import json
@@ -27,6 +27,7 @@ AUTO_INTERVAL = 300
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
+NOTIFICATION_CHANNEL_ID = 1412316924536422405  # Specific notification channel
 
 # Rank thresholds (EASY PROGRESSION)
 RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
@@ -40,7 +41,7 @@ RANK_COLORS = {
     "D": discord.Color.green(),
     "E": discord.Color.light_grey()
 }
-ROLE_PREFIX = ""
+ROLE_PREFIX = "Rank "  # Roles will be "Rank S+", "Rank A", etc.
 
 # ---------- Intents / Client / Tree ----------
 intents = discord.Intents.default()
@@ -210,51 +211,86 @@ def compute_level_from_total_xp(total_xp: int) -> int:
         level += 1
     return level
 
-# ---------- Level Up Notification ----------
+# ---------- Advanced Level Up Notification ----------
 async def send_level_up_notification(member: discord.Member, old_level: int, new_level: int):
     if new_level > old_level:
-        channel = member.guild.system_channel or discord.utils.get(member.guild.text_channels, name="general")
+        channel = client.get_channel(NOTIFICATION_CHANNEL_ID)
         if channel and channel.permissions_for(member.guild.me).send_messages:
             embed = discord.Embed(
-                title="🎉 LEVEL UP!",
-                description=f"{member.mention} has reached **Level {new_level}**!",
+                title="✨ LEVEL UP ACHIEVEMENT ✨",
+                description=f"## {member.mention} has advanced to **Level {new_level}**!",
                 color=discord.Color.gold(),
                 timestamp=datetime.now(timezone.utc)
             )
+            
+            # Progress animation
+            progress_emojis = ["⬜"] * 10
+            fill_count = min(new_level % 10, 10)
+            for i in range(fill_count):
+                progress_emojis[i] = "🟩"
+            
+            embed.add_field(
+                name="Level Progress", 
+                value=f"`{''.join(progress_emojis)}`\n**{old_level}** → **{new_level}**",
+                inline=False
+            )
+            
+            # Milestone rewards
+            if new_level % 10 == 0:
+                embed.add_field(
+                    name="🎯 Milestone Reached!", 
+                    value=f"You've reached a special level **{new_level}** milestone!",
+                    inline=False
+                )
+            
             embed.set_thumbnail(url=member.display_avatar.url)
-            embed.add_field(name="Previous Level", value=f"Level {old_level}", inline=True)
-            embed.add_field(name="New Level", value=f"Level {new_level}", inline=True)
-            embed.add_field(name="Congratulations!", value="Keep chatting to level up more! 🚀", inline=False)
-            embed.set_footer(text="Level System")
+            embed.set_author(name=f"{member.display_name}'s Level Journey", icon_url=member.display_avatar.url)
+            embed.set_footer(text=f"Level {new_level} • Keep climbing! 📈")
             
             await channel.send(embed=embed)
 
-# ---------- Rank Up Notification ----------
+# ---------- Advanced Rank Up Notification ----------
 async def send_rank_up_notification(member: discord.Member, old_rank: str, new_rank: str):
     if new_rank != old_rank:
-        channel = member.guild.system_channel or discord.utils.get(member.guild.text_channels, name="general")
+        channel = client.get_channel(NOTIFICATION_CHANNEL_ID)
         if channel and channel.permissions_for(member.guild.me).send_messages:
             rank_emoji = RANK_EMOJIS.get(new_rank, "🏆")
+            
             embed = discord.Embed(
-                title=f"{rank_emoji} RANK UP!",
-                description=f"{member.mention} has achieved **{new_rank} Rank**!",
+                title=f"🏆 RANK PROMOTION 🏆",
+                description=f"## {member.mention} has been promoted to {rank_emoji} **{new_rank} Rank**!",
                 color=RANK_COLORS.get(new_rank, discord.Color.blue()),
                 timestamp=datetime.now(timezone.utc)
             )
+            
+            # Rank progression
+            rank_index = RANK_ORDER.index(new_rank) if new_rank in RANK_ORDER else -1
+            if rank_index > 0:
+                next_rank = RANK_ORDER[rank_index - 1] if rank_index > 0 else None
+                if next_rank:
+                    embed.add_field(
+                        name="Next Goal", 
+                        value=f"Next rank: **{next_rank}** {RANK_EMOJIS.get(next_rank, '')}",
+                        inline=True
+                    )
+            
+            embed.add_field(
+                name="Rank Progress", 
+                value=f"**{old_rank if old_rank else 'No Rank'}** → **{new_rank}** {rank_emoji}",
+                inline=True
+            )
+            
+            # Special message for high ranks
+            if new_rank in ["S+", "A"]:
+                embed.add_field(
+                    name="Elite Status", 
+                    value="Welcome to the elite ranks! 🎖️",
+                    inline=False
+                )
+            
             embed.set_thumbnail(url=member.display_avatar.url)
-            
-            if old_rank:
-                embed.add_field(name="Previous Rank", value=old_rank, inline=True)
-            else:
-                embed.add_field(name="Previous Rank", value="No Rank", inline=True)
-                
-            embed.add_field(name="New Rank", value=new_rank, inline=True)
-            embed.add_field(name="Achievement", value="Great job! Keep up the activity! 💪", inline=False)
-            
-            if new_rank == "S+":
-                embed.add_field(name="Elite Status", value="You've reached the highest rank! 🏆", inline=False)
-            
-            embed.set_footer(text="Rank System")
+            embed.set_author(name=f"{member.display_name}'s Rank Achievement", icon_url=member.display_avatar.url)
+            embed.set_footer(text=f"{new_rank} Rank • Keep up the great work! 💪")
             
             await channel.send(embed=embed)
 
@@ -314,7 +350,7 @@ async def clear_manual_rank(guild_id: int, user_id: int):
 
 # ---------- Role management ----------
 async def get_or_create_role(guild: discord.Guild, rank_name: str):
-    role_name = f"{ROLE_PREFIX}{rank_name}"
+    role_name = f"{ROLE_PREFIX}{rank_name}"  # "Rank S+", "Rank A", etc.
     role = discord.utils.get(guild.roles, name=role_name)
     if role:
         return role
@@ -528,7 +564,7 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
+    embed = discord.Emembed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
