@@ -1,4 +1,4 @@
-# bot.py — Perfect Rank System with Advanced Notifications
+# bot.py — Perfect Rank System with All Fixes
 import os
 import re
 import json
@@ -27,7 +27,7 @@ AUTO_INTERVAL = 300
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
-NOTIFICATION_CHANNEL_ID = 1412316924536422405  # Specific notification channel
+NOTIFICATION_CHANNEL_ID = 1412316924536422405
 
 # Rank thresholds (EASY PROGRESSION)
 RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
@@ -41,7 +41,7 @@ RANK_COLORS = {
     "D": discord.Color.green(),
     "E": discord.Color.light_grey()
 }
-ROLE_PREFIX = "Rank "  # Roles will be "Rank S+", "Rank A", etc.
+ROLE_PREFIX = "Rank "
 
 # ---------- Intents / Client / Tree ----------
 intents = discord.Intents.default()
@@ -192,12 +192,12 @@ async def channeltype_autocomplete(interaction: discord.Interaction, current: st
 
 # ---------- XP / Level mechanics ----------
 def xp_for_message(message_content: str) -> int:
-    base = 10  # Balanced base XP
-    extra = min(len(message_content) // 15, 20)  # Reasonable extra XP
+    base = 10
+    extra = min(len(message_content) // 15, 20)
     return base + extra
 
 def required_xp_for_level(level: int) -> int:
-    return 50 * (level ** 2) + 100  # Better progression
+    return 50 * (level ** 2) + 100
 
 def total_xp_to_reach_level(level: int) -> int:
     total = 0
@@ -223,7 +223,6 @@ async def send_level_up_notification(member: discord.Member, old_level: int, new
                 timestamp=datetime.now(timezone.utc)
             )
             
-            # Progress animation
             progress_emojis = ["⬜"] * 10
             fill_count = min(new_level % 10, 10)
             for i in range(fill_count):
@@ -235,7 +234,6 @@ async def send_level_up_notification(member: discord.Member, old_level: int, new
                 inline=False
             )
             
-            # Milestone rewards
             if new_level % 10 == 0:
                 embed.add_field(
                     name="🎯 Milestone Reached!", 
@@ -263,7 +261,6 @@ async def send_rank_up_notification(member: discord.Member, old_rank: str, new_r
                 timestamp=datetime.now(timezone.utc)
             )
             
-            # Rank progression
             rank_index = RANK_ORDER.index(new_rank) if new_rank in RANK_ORDER else -1
             if rank_index > 0:
                 next_rank = RANK_ORDER[rank_index - 1] if rank_index > 0 else None
@@ -280,7 +277,6 @@ async def send_rank_up_notification(member: discord.Member, old_rank: str, new_r
                 inline=True
             )
             
-            # Special message for high ranks
             if new_rank in ["S+", "A"]:
                 embed.add_field(
                     name="Elite Status", 
@@ -350,7 +346,7 @@ async def clear_manual_rank(guild_id: int, user_id: int):
 
 # ---------- Role management ----------
 async def get_or_create_role(guild: discord.Guild, rank_name: str):
-    role_name = f"{ROLE_PREFIX}{rank_name}"  # "Rank S+", "Rank A", etc.
+    role_name = f"{ROLE_PREFIX}{rank_name}"
     role = discord.utils.get(guild.roles, name=role_name)
     if role:
         return role
@@ -466,7 +462,6 @@ async def auto_message_task():
     channel = client.get_channel(AUTO_CHANNEL_ID)
     if not channel:
         print(f"⚠️ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
-        return
     while not client.is_closed():
         try:
             if AUTO_MESSAGES:
@@ -564,7 +559,7 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Emembed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
+    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
@@ -689,11 +684,9 @@ async def on_message(message: discord.Message):
     is_admin = message.author.guild_permissions.administrator
     has_bypass = any(role.name == BYPASS_ROLE for role in message.author.roles) if hasattr(message.author, 'roles') else False
 
-    # ✅ Only apply filters to non-admin, non-bypass users
     if not is_admin and not has_bypass:
         content_lower = message.content.lower()
 
-        # check bad words
         for bad in BAD_WORDS:
             if bad and bad in content_lower:
                 try:
@@ -714,7 +707,6 @@ async def on_message(message: discord.Message):
                             pass
                 return
 
-        # check links / adverts
         if ("http://" in content_lower or "https://" in content_lower or "discord.gg/" in content_lower):
             try:
                 await message.delete()
@@ -734,13 +726,10 @@ async def on_message(message: discord.Message):
                         pass
             return
 
-    # Check if message is in XP channel
     if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
         return
 
-    # ✅ NOW ADMINS WILL GET XP TOO
     try:
-        # Get old data for comparison
         old_data = await get_user_row(message.guild.id, message.author.id)
         old_level = compute_level_from_total_xp(old_data['total_xp'])
         old_rank = None
@@ -749,25 +738,20 @@ async def on_message(message: discord.Message):
                 old_rank = r
                 break
 
-        # Add new XP
         xp = xp_for_message(message.content)
         await add_message(message.guild.id, message.author.id, xp, message.channel.id)
         
-        # Get new data
         new_data = await get_user_row(message.guild.id, message.author.id)
         new_level = compute_level_from_total_xp(new_data['total_xp'])
         
-        # Check for rank update
         new_rank = None
         for r, thresh in RANKS:
             if new_data['daily_xp'] >= thresh:
                 new_rank = r
                 break
         
-        # Update roles based on new rank
         current_rank = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
         
-        # Send notifications if level or rank changed
         if new_level > old_level:
             await send_level_up_notification(message.author, old_level, new_level)
         
@@ -777,7 +761,6 @@ async def on_message(message: discord.Message):
     except Exception as e:
         print("⚠️ XP add error:", e)
 
-    # text-command fallback (simple ping)
     if message.content.strip().lower().startswith("!ping"):
         try:
             await message.channel.send(f"🏓 Pong! Latency: {round(client.latency * 1000)}ms")
@@ -797,7 +780,6 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
     
     lvl = compute_level_from_total_xp(total_xp)
     
-    # Get current rank
     forced_rank = await get_manual_rank(interaction.guild.id, member.id)
     if forced_rank:
         rank_name = forced_rank
@@ -810,14 +792,12 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
                 break
         rank_source = ""
 
-    # Calculate progress
     current_level_xp = total_xp_to_reach_level(lvl)
     next_level_xp = total_xp_to_reach_level(lvl + 1)
     xp_progress = total_xp - current_level_xp
     xp_needed = next_level_xp - current_level_xp
     progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
     
-    # Create beautiful embed
     rank_emoji = RANK_EMOJIS.get(rank_name, "🔹")
     embed_color = RANK_COLORS.get(rank_name, discord.Color.blurple())
     
@@ -829,17 +809,13 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
     
     embed.set_thumbnail(url=member.display_avatar.url)
     
-    # Rank section
     rank_value = f"{rank_emoji} **{rank_name}**{rank_source}" if rank_name else "🔸 **No Rank Yet**"
     embed.add_field(name="🏆 Current Rank", value=rank_value, inline=True)
     
-    # Level section
     embed.add_field(name="📈 Level", value=f"**{lvl}**", inline=True)
     
-    # XP section
     embed.add_field(name="💎 Total XP", value=f"**{total_xp}**", inline=True)
     
-    # Progress bar (visual)
     filled_blocks = int(progress_percentage / 10)
     progress_bar = "🟩" * filled_blocks + "⬜" * (10 - filled_blocks)
     
@@ -849,17 +825,15 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         inline=False
     )
     
-    # Daily XP
     embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**", inline=True)
     
-    # Next rank info
     next_rank = None
     if rank_name:
         current_rank_index = RANK_ORDER.index(rank_name)
         if current_rank_index > 0:
             next_rank = RANKS[current_rank_index - 1]
     else:
-        next_rank = RANKS[-1]  # Start from E rank
+        next_rank = RANKS[-1]
     
     if next_rank:
         xp_needed = max(0, next_rank[1] - daily_xp)
@@ -870,7 +844,6 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
             inline=True
         )
     
-    # Rank requirements info
     rank_info = " | ".join([f"{r}: {t} XP" for r, t in RANKS])
     embed.set_footer(text=f"Rank Requirements: {rank_info}")
     
@@ -920,7 +893,6 @@ async def build_leaderboard_embed(guild: discord.Guild):
         name = member.display_name if member else f"User {uid}"
         lvl = compute_level_from_total_xp(txp)
         
-        # Get rank for this user
         user_rank = None
         for r, thresh in RANKS:
             if dxp >= thresh:
@@ -938,7 +910,6 @@ async def build_leaderboard_embed(guild: discord.Guild):
     
     embed.description = desc
     
-    # Add quick rank guide
     rank_guide = " | ".join([f"{RANK_EMOJIS.get(r, '')} {r}" for r in RANK_ORDER])
     embed.set_footer(text=f"Ranks: {rank_guide} | Reset daily at 12:00 AM PKT")
     
@@ -983,21 +954,23 @@ async def resetleaderboard(interaction: discord.Interaction):
 # ---------- EVENTS ----------
 @client.event
 async def on_ready():
-    # Initialize database first
     await init_db()
     
-    # Sync commands only once
     try:
         if not hasattr(client, 'commands_synced'):
-            synced = await tree.sync()
+            await tree.sync()
             client.commands_synced = True
-            print(f"✅ {len(synced)} commands synced. Logged in as: {client.user}")
+            print(f"✅ Commands synced successfully. Logged in as: {client.user}")
+            
+            print("📋 Registered Commands:")
+            for command in tree.get_commands():
+                print(f"  /{command.name} - {command.description}")
+                
         else:
-            print(f"✅ Already synced commands. Logged in as: {client.user}")
+            print(f"✅ Bot is ready. Commands already synced. Logged in as: {client.user}")
     except Exception as e:
         print(f"⚠️ Sync error: {e}")
     
-    # Start background tasks
     client.loop.create_task(status_loop())
     client.loop.create_task(counter_updater())
     client.loop.create_task(auto_message_task())
