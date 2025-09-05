@@ -1,4 +1,4 @@
-# bot.py — Final merged version with XP/Level/Rank/Leaderboard and daily reset (Asia/Karachi)
+# bot.py — PostgreSQL version with XP/Level/Rank/Leaderboard
 import os
 import re
 import json
@@ -7,28 +7,31 @@ import asyncio
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
-import sqlite3
 import time
 from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
+import asyncpg
+from asyncpg.pool import Pool
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID_ENV = os.getenv("GUILD_ID")  # optional
+GUILD_ID_ENV = os.getenv("GUILD_ID")
 AUTO_FILE = os.getenv("AUTO_FILE", "automsg.json")
+DATABASE_URL = os.getenv("DATABASE_URL")
+XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
-# ---------- Config (change if needed) ----------
-AUTO_CHANNEL_ID = 1412316924536422405  # change if needed
-AUTO_INTERVAL = 300  # seconds (5 min)
-BYPASS_ROLE = "Basic"  # role name that bypasses filters
+# ---------- Config ----------
+AUTO_CHANNEL_ID = 1412316924536422405
+AUTO_INTERVAL = 300
+BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
 
-# Rank thresholds (DAILY XP thresholds)
+# Rank thresholds
 RANKS = [("S+", 400), ("A", 350), ("B", 300), ("C", 250), ("D", 200), ("E", 150)]
 RANK_ORDER = [r[0] for r in RANKS]
-ROLE_PREFIX = ""  # set if you want "Rank - S+" style
+ROLE_PREFIX = ""
 
 # ---------- Intents / Client / Tree ----------
 intents = discord.Intents.default()
@@ -45,31 +48,44 @@ custom_status = {}
 counter_channels = {}
 AUTO_MESSAGES = []
 REPORT_CHANNELS = {}
+db_pool: Pool = None
 
-# ---------- DB (SQLite) ----------
-DB_PATH = "ranker.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users (
-  guild_id INTEGER,
-  user_id INTEGER,
-  total_xp INTEGER DEFAULT 0,
-  daily_msgs INTEGER DEFAULT 0,
-  daily_xp INTEGER DEFAULT 0,
-  last_message_ts INTEGER DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id)
-)
-""")
-cur.execute("""
-CREATE TABLE IF NOT EXISTS manual_ranks (
-  guild_id INTEGER,
-  user_id INTEGER,
-  forced_rank TEXT,
-  PRIMARY KEY (guild_id, user_id)
-)
-""")
-conn.commit()
+# ---------- Database Setup ----------
+async def init_db():
+    global db_pool
+    try:
+        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        print("✅ Connected to PostgreSQL database")
+        
+        async with db_pool.acquire() as conn:
+            # Create users table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    guild_id BIGINT,
+                    user_id BIGINT,
+                    total_xp INTEGER DEFAULT 0,
+                    daily_msgs INTEGER DEFAULT 0,
+                    daily_xp INTEGER DEFAULT 0,
+                    last_message_ts INTEGER DEFAULT 0,
+                    channel_id BIGINT DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+            """)
+            
+            # Create manual_ranks table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_ranks (
+                    guild_id BIGINT,
+                    user_id BIGINT,
+                    forced_rank TEXT,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+            """)
+            
+        print("✅ Database tables created/verified")
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
+        raise
 
 # ---------- Helpers ----------
 def update_recent_channel(user_id: int, guild_id: int, channel_id: int):
@@ -173,7 +189,6 @@ def xp_for_message(message_content: str) -> int:
     return base + extra
 
 def required_xp_for_level(level: int) -> int:
-    # level=1 -> 50
     req = 50
     if level == 1:
         return req
@@ -199,46 +214,58 @@ def compute_level_from_total_xp(total_xp: int) -> int:
     return level
 
 # ---------- DB helpers ----------
-def add_message(guild_id: int, user_id: int, xp: int):
+async def add_message(guild_id: int, user_id: int, xp: int, channel_id: int):
     now = int(time.time())
-    with conn:
-        cur.execute("INSERT OR IGNORE INTO users (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
-        cur.execute("""
-            UPDATE users SET
-              total_xp = total_xp + ?,
-              daily_xp = daily_xp + ?,
-              daily_msgs = daily_msgs + 1,
-              last_message_ts = ?
-            WHERE guild_id = ? AND user_id = ?
-        """, (xp, xp, now, guild_id, user_id))
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (guild_id, user_id, total_xp, daily_xp, daily_msgs, last_message_ts, channel_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET
+                total_xp = users.total_xp + $3,
+                daily_xp = users.daily_xp + $4,
+                daily_msgs = users.daily_msgs + $5,
+                last_message_ts = $6,
+                channel_id = $7
+        """, guild_id, user_id, xp, xp, 1, now, channel_id)
 
-def get_user_row(guild_id: int, user_id: int):
-    cur.execute("SELECT total_xp, daily_msgs, daily_xp FROM users WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-    r = cur.fetchone()
-    if not r:
-        return {"total_xp":0, "daily_msgs":0, "daily_xp":0}
-    return {"total_xp": r[0], "daily_msgs": r[1], "daily_xp": r[2]}
+async def get_user_row(guild_id: int, user_id: int):
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT total_xp, daily_msgs, daily_xp 
+            FROM users 
+            WHERE guild_id=$1 AND user_id=$2 AND channel_id=$3
+        """, guild_id, user_id, XP_CHANNEL_ID)
+        
+        if not row:
+            return {"total_xp": 0, "daily_msgs": 0, "daily_xp": 0}
+        return {"total_xp": row['total_xp'], "daily_msgs": row['daily_msgs'], "daily_xp": row['daily_xp']}
 
-def reset_all_daily(guild_id: int):
-    with conn:
-        cur.execute("UPDATE users SET daily_msgs=0, daily_xp=0 WHERE guild_id=?", (guild_id,))
+async def reset_all_daily(guild_id: int):
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE users SET daily_msgs=0, daily_xp=0 WHERE guild_id=$1", guild_id)
 
-def reset_user_all(guild_id:int, user_id:int):
-    with conn:
-        cur.execute("DELETE FROM users WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+async def reset_user_all(guild_id: int, user_id: int):
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM users WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
 
-def force_set_manual_rank(guild_id:int, user_id:int, rank_str:str):
-    with conn:
-        cur.execute("INSERT OR REPLACE INTO manual_ranks (guild_id, user_id, forced_rank) VALUES (?, ?, ?)", (guild_id, user_id, rank_str))
+async def force_set_manual_rank(guild_id: int, user_id: int, rank_str: str):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO manual_ranks (guild_id, user_id, forced_rank)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET forced_rank = $3
+        """, guild_id, user_id, rank_str)
 
-def get_manual_rank(guild_id:int, user_id:int):
-    cur.execute("SELECT forced_rank FROM manual_ranks WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-    r = cur.fetchone()
-    return r[0] if r else None
+async def get_manual_rank(guild_id: int, user_id: int):
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT forced_rank FROM manual_ranks WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
+        return row['forced_rank'] if row else None
 
-def clear_manual_rank(guild_id:int, user_id:int):
-    with conn:
-        cur.execute("DELETE FROM manual_ranks WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+async def clear_manual_rank(guild_id: int, user_id: int):
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
 
 # ---------- Role management ----------
 async def get_or_create_role(guild: discord.Guild, rank_name: str):
@@ -273,7 +300,7 @@ async def assign_rank_role_for_member(guild: discord.Guild, member: discord.Memb
             pass
 
 async def evaluate_and_update_member_rank(guild: discord.Guild, member: discord.Member, daily_xp: int):
-    forced = get_manual_rank(guild.id, member.id)
+    forced = await get_manual_rank(guild.id, member.id)
     if forced:
         await remove_rank_roles_from_member(guild, member)
         await assign_rank_role_for_member(guild, member, forced)
@@ -290,25 +317,34 @@ async def evaluate_and_update_member_rank(guild: discord.Guild, member: discord.
     return target_rank
 
 # ---------- Leaderboard cache ----------
-leaderboard_cache = {}  # guild_id -> (ts, embed)
-def build_leaderboard_embed(guild: discord.Guild):
-    cur.execute("SELECT user_id, daily_xp, total_xp FROM users WHERE guild_id=? ORDER BY daily_xp DESC LIMIT 20", (guild.id,))
-    rows = cur.fetchall()
-    from discord import Embed
-    embed = Embed(title=f"{guild.name} — Leaderboard (Top 20 by 24h XP)", timestamp=datetime.now(timezone.utc))
+leaderboard_cache = {}
+async def build_leaderboard_embed(guild: discord.Guild):
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT user_id, daily_xp, total_xp 
+            FROM users 
+            WHERE guild_id=$1 AND channel_id=$2 
+            ORDER BY daily_xp DESC 
+            LIMIT 20
+        """, guild.id, XP_CHANNEL_ID)
+    
+    embed = discord.Embed(title=f"{guild.name} — Leaderboard (Top 20 by 24h XP)", timestamp=datetime.now(timezone.utc))
     try:
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
     except Exception:
         pass
+    
     desc = ""
     rank_num = 1
-    for uid, dxp, txp in rows:
+    for row in rows:
+        uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
         member = guild.get_member(uid)
         name = member.display_name if member else f"User ID {uid}"
         lvl = compute_level_from_total_xp(txp)
         desc += f"**{rank_num}. {name}** — {dxp} XP (24h) • {txp} XP total • Lv {lvl}\n"
         rank_num += 1
+    
     if not desc:
         desc = "No activity yet."
     embed.description = desc
@@ -386,9 +422,11 @@ async def auto_message_task():
 
 # ---------- Daily reset (cron Asia/Karachi 00:00) ----------
 async def evaluate_and_reset_for_guild(guild: discord.Guild):
-    cur.execute("SELECT user_id, daily_xp FROM users WHERE guild_id=?", (guild.id,))
-    rows = cur.fetchall()
-    for uid, dxp in rows:
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, daily_xp FROM users WHERE guild_id=$1", guild.id)
+    
+    for row in rows:
+        uid, dxp = row['user_id'], row['daily_xp']
         member = guild.get_member(uid)
         if not member:
             continue
@@ -396,12 +434,11 @@ async def evaluate_and_reset_for_guild(guild: discord.Guild):
             await evaluate_and_update_member_rank(guild, member, dxp)
         except Exception:
             pass
-    reset_all_daily(guild.id)
-    # clear leaderboard cache for guild
+    
+    await reset_all_daily(guild.id)
     leaderboard_cache.pop(guild.id, None)
 
 async def reset_daily_ranks_async():
-    # runs in bot event loop
     for guild in client.guilds:
         try:
             await evaluate_and_reset_for_guild(guild)
@@ -409,15 +446,13 @@ async def reset_daily_ranks_async():
             print(f"⚠️ Daily reset error guild {guild.id}: {e}")
 
 def schedule_daily_reset():
-    tz = pytz.timezone("Asia/Karachi")  # UTC+05:00
+    tz = pytz.timezone("Asia/Karachi")
     scheduler = AsyncIOScheduler(timezone=tz)
-    # schedule at 00:00 Asia/Karachi every day
-    # we wrap coroutine with asyncio.create_task
     scheduler.add_job(lambda: asyncio.create_task(reset_daily_ranks_async()), "cron", hour=0, minute=0)
     scheduler.start()
     print("✅ Scheduled daily reset (00:00 Asia/Karachi)")
 
-# ---------- SLASH COMMANDS (existing + new) ----------
+# ---------- SLASH COMMANDS ----------
 @tree.command(name="say", description="Send formatted message to a channel (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
 async def say(interaction: discord.Interaction, channel_id: str, content: str):
@@ -591,20 +626,21 @@ async def setreport(interaction: discord.Interaction, channel_id: str):
 # ---------- MESSAGE FILTER + XP tracking ----------
 @client.event
 async def on_message(message: discord.Message):
-    # allow bots and DMs through
     if message.author.bot or message.guild is None:
         return
 
-    # allow admins
     if message.author.guild_permissions.administrator:
         return
 
-    # allow bypass role
     try:
         if any(role.name == BYPASS_ROLE for role in message.author.roles):
             return
     except Exception:
         pass
+
+    # ✅ Check if message is in XP channel
+    if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
+        return
 
     content_lower = message.content.lower()
 
@@ -649,11 +685,11 @@ async def on_message(message: discord.Message):
                     pass
         return
 
-    # XP & daily tracking (only non-admin, non-bot, non-bypass)
+    # XP & daily tracking
     try:
         xp = xp_for_message(message.content)
-        add_message(message.guild.id, message.author.id, xp)
-        row = get_user_row(message.guild.id, message.author.id)
+        await add_message(message.guild.id, message.author.id, xp, message.channel.id)
+        row = await get_user_row(message.guild.id, message.author.id)
         try:
             await evaluate_and_update_member_rank(message.guild, message.author, row['daily_xp'])
         except Exception:
@@ -669,8 +705,6 @@ async def on_message(message: discord.Message):
             pass
 
 # ---------- LEADERBOARD & RANK Commands ----------
-from discord import Embed
-
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 20 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
@@ -680,7 +714,7 @@ async def leaderboard(interaction: discord.Interaction):
     cache = leaderboard_cache.get(guild.id)
     if cache and now_ts - cache[0] < 60:
         return await interaction.response.send_message(embed=cache[1])
-    embed = build_leaderboard_embed(guild)
+    embed = await build_leaderboard_embed(guild)
     leaderboard_cache[guild.id] = (now_ts, embed)
     await interaction.response.send_message(embed=embed)
 
@@ -689,10 +723,11 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
     member = member or interaction.user
     if interaction.guild is None:
         return await interaction.response.send_message("Guild-only.", ephemeral=True)
-    row = get_user_row(interaction.guild.id, member.id)
+    
+    row = await get_user_row(interaction.guild.id, member.id)
     lvl = compute_level_from_total_xp(row['total_xp'])
     rank_name = None
-    forced = get_manual_rank(interaction.guild.id, member.id)
+    forced = await get_manual_rank(interaction.guild.id, member.id)
     if forced:
         rank_name = forced
     else:
@@ -700,7 +735,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
             if row['daily_xp'] >= thresh:
                 rank_name = r
                 break
-    embed = Embed(title=f"{member.display_name}'s Rank", color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
+    embed = discord.Embed(title=f"{member.display_name}'s Rank", color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="Rank (24h)", value=rank_name or "None", inline=True)
     embed.add_field(name="Level", value=str(lvl), inline=True)
@@ -716,7 +751,7 @@ async def addrank(interaction: discord.Interaction, member: discord.Member, rank
     rank = rank.strip()
     if rank not in RANK_ORDER:
         return await interaction.response.send_message(f"❌ Invalid rank. Choose from: {', '.join(RANK_ORDER)}", ephemeral=True)
-    force_set_manual_rank(interaction.guild.id, member.id, rank)
+    await force_set_manual_rank(interaction.guild.id, member.id, rank)
     await remove_rank_roles_from_member(interaction.guild, member)
     await assign_rank_role_for_member(interaction.guild, member, rank)
     await interaction.response.send_message("✅ Forced rank applied.", ephemeral=True)
@@ -725,8 +760,8 @@ async def addrank(interaction: discord.Interaction, member: discord.Member, rank
 async def removefromleaderboard(interaction: discord.Interaction, member: discord.Member):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    reset_user_all(interaction.guild.id, member.id)
-    clear_manual_rank(interaction.guild.id, member.id)
+    await reset_user_all(interaction.guild.id, member.id)
+    await clear_manual_rank(interaction.guild.id, member.id)
     await remove_rank_roles_from_member(interaction.guild, member)
     await interaction.response.send_message("✅ Cleared user data and roles.", ephemeral=True)
 
@@ -734,9 +769,9 @@ async def removefromleaderboard(interaction: discord.Interaction, member: discor
 async def resetleaderboard(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    with conn:
-        cur.execute("DELETE FROM users WHERE guild_id=?", (interaction.guild.id,))
-        cur.execute("DELETE FROM manual_ranks WHERE guild_id=?", (interaction.guild.id,))
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM users WHERE guild_id=$1", interaction.guild.id)
+        await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1", interaction.guild.id)
     for member in interaction.guild.members:
         try:
             await remove_rank_roles_from_member(interaction.guild, member)
@@ -747,12 +782,21 @@ async def resetleaderboard(interaction: discord.Interaction):
 # ---------- EVENTS ----------
 @client.event
 async def on_ready():
+    # Initialize database first
+    await init_db()
+    
+    # Sync commands only once
     try:
-        await tree.sync()
-        print(f"✅ Commands synced. Logged in as: {client.user}")
+        if not hasattr(client, 'commands_synced'):
+            synced = await tree.sync()
+            client.commands_synced = True
+            print(f"✅ {len(synced)} commands synced. Logged in as: {client.user}")
+        else:
+            print(f"✅ Already synced commands. Logged in as: {client.user}")
     except Exception as e:
         print(f"⚠️ Sync error: {e}")
-    # start background tasks
+    
+    # Start background tasks
     client.loop.create_task(status_loop())
     client.loop.create_task(counter_updater())
     client.loop.create_task(auto_message_task())
@@ -766,4 +810,6 @@ async def on_member_join(member):
 if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN missing — set it in Railway variables.")
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
