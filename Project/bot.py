@@ -24,11 +24,12 @@ XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 300
+AUTO_INTERVAL = 900  # Changed to 15 minutes (900 seconds)
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
 NOTIFICATION_CHANNEL_ID = 1412316924536422405
+REPORT_CHANNEL_ID = 1412325934291484692  # Hardcoded report channel
 
 # Rank thresholds (EASY PROGRESSION)
 RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
@@ -58,7 +59,6 @@ last_joined_member = {}
 custom_status = {}
 counter_channels = {}
 AUTO_MESSAGES = []
-REPORT_CHANNELS = {}
 db_pool: Pool = None
 
 # ---------- Database Setup ----------
@@ -245,7 +245,7 @@ async def send_level_up_notification(member: discord.Member, old_level: int, new
             
             embed.add_field(
                 name="Level Progress", 
-                value=f"`{''.join(progress_emojies)}`\n**{old_level}** → **{new_level}**",
+                value=f"`{''.join(progress_emojis)}`\n**{old_level}** → **{new_level}**",
                 inline=False
             )
             
@@ -608,9 +608,11 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/recent", value="Show your recent channels", inline=False)
     embed.add_field(name="/purge", value="(Admin) Delete messages", inline=False)
     embed.add_field(name="/setcounter", value="(Admin) Create live counter channel", inline=False)
-    embed.add_field(name="/setreport", value="(Admin) Set report logs channel", inline=False)
     embed.add_field(name="/leaderboard", value="Show Top20 by 24h XP", inline=False)
     embed.add_field(name="/rank", value="Show your rank, level & XP", inline=False)
+    embed.add_field(name="/addrank", value="(Admin) Force rank to user", inline=False)
+    embed.add_field(name="/removefromleaderboard", value="(Admin) Remove user from leaderboard", inline=False)
+    embed.add_field(name="/resetleaderboard", value="(Admin) Reset entire leaderboard", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="purge", description="Delete messages (Admin only)")
@@ -660,15 +662,6 @@ async def setdefaultstatus(interaction: discord.Interaction):
     custom_status[interaction.guild.id] = None
     await interaction.response.send_message("✅ Default status loop resumed", ephemeral=True)
 
-@tree.command(name="setreport", description="Set report log channel (Admin only)")
-@app_commands.autocomplete(channel_id=channel_autocomplete)
-async def setreport(interaction: discord.Interaction, channel_id: str):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    REPORT_CHANNELS[interaction.guild.id] = int(channel_id)
-    ch = interaction.guild.get_channel(int(channel_id))
-    await interaction.response.send_message(f"✅ Reports will be sent to {ch.mention}", ephemeral=True)
-
 @tree.command(name="testauto", description="Test auto message system")
 async def testauto(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
@@ -709,14 +702,14 @@ async def on_message(message: discord.Message):
                     await message.channel.send(f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.", delete_after=8)
                 except Exception:
                     pass
-                rid = REPORT_CHANNELS.get(message.guild.id)
-                if rid:
-                    log_ch = message.guild.get_channel(rid)
-                    if log_ch:
-                        try:
-                            await log_ch.send(f"⚠️ {message.author.mention} has misbehaved and used: **{bad}** (in {message.channel.mention})")
-                        except Exception:
-                            pass
+                
+                # Automatically send to hardcoded report channel
+                log_ch = client.get_channel(REPORT_CHANNEL_ID)
+                if log_ch:
+                    try:
+                        await log_ch.send(f"⚠️ {message.author.mention} has misbehaved and used: **{bad}** (in {message.channel.mention})")
+                    except Exception:
+                        pass
                 return
 
         if ("http://" in content_lower or "https://" in content_lower or "discord.gg/" in content_lower):
@@ -728,14 +721,14 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete_after=8)
             except Exception:
                 pass
-            rid = REPORT_CHANNELS.get(message.guild.id)
-            if rid:
-                log_ch = message.guild.get_channel(rid)
-                if log_ch:
-                    try:
-                        await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
-                    except Exception:
-                        pass
+            
+            # Automatically send to hardcoded report channel
+            log_ch = client.get_channel(REPORT_CHANNEL_ID)
+            if log_ch:
+                try:
+                    await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
+                except Exception:
+                    pass
             return
 
     if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
@@ -861,7 +854,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
     
     await interaction.response.send_message(embed=embed)
 
-# ---------- Enhanced Leaderboard Command ----------
+# ---------- Advanced Leaderboard Command ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
@@ -914,8 +907,11 @@ async def build_leaderboard_embed(guild: discord.Guild):
         rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
         medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
         
-        desc += f"{medal} {rank_emoji} **{name}**\n"
-        desc += f"   ⭐ {dxp} XP (24h) • 📈 Lv {lvl} • 💎 {txp} Total XP\n\n"
+        # Show rank name instead of just emoji
+        rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
+        
+        desc += f"{medal} **{name}**\n"
+        desc += f"   {rank_display} • ⭐ {dxp} XP (24h) • 📈 Lv {lvl}\n\n"
     
     if not desc:
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
@@ -977,6 +973,13 @@ async def on_ready():
         print(f"✅ Auto message channel found: #{channel.name}")
     else:
         print(f"❌ ERROR: Auto channel {AUTO_CHANNEL_ID} not found!")
+    
+    # Report channel verification
+    report_channel = client.get_channel(REPORT_CHANNEL_ID)
+    if report_channel:
+        print(f"✅ Report channel found: #{report_channel.name}")
+    else:
+        print(f"❌ ERROR: Report channel {REPORT_CHANNEL_ID} not found!")
     
     try:
         if not hasattr(client, 'commands_synced'):
