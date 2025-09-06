@@ -1,13 +1,17 @@
-# bot.py — Perfect Rank System with All Fixes
+# bot.py — Perfect Rank System with Premium Rank Cards
 import os
 import re
 import json
 import random
 import asyncio
 import discord
+import math
+import time
+import io
+import random
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from discord import app_commands
 from dotenv import load_dotenv
-import time
 from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
@@ -18,30 +22,30 @@ import aiohttp
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID_ENV = os.getenv("GUILD_ID")
-AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL")  # GitHub raw URL
+AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL") # GitHub raw URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 900  # Changed to 15 minutes (900 seconds)
+AUTO_INTERVAL = 900 # Changed to 15 minutes (900 seconds)
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
 NOTIFICATION_CHANNEL_ID = 1412316924536422405
-REPORT_CHANNEL_ID = 1412325934291484692  # Hardcoded report channel
+REPORT_CHANNEL_ID = 1412325934291484692 # Hardcoded report channel
 
 # Rank thresholds (EASY PROGRESSION)
 RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
 RANK_ORDER = [r[0] for r in RANKS]
 RANK_EMOJIS = {"S+": "🌟", "A": "🔥", "B": "⭐", "C": "💫", "D": "✨", "E": "🔶"}
 RANK_COLORS = {
-    "S+": discord.Color.gold(),
-    "A": discord.Color.red(), 
-    "B": discord.Color.orange(),
-    "C": discord.Color.blue(),
-    "D": discord.Color.green(),
-    "E": discord.Color.light_grey()
+"S+": discord.Color.gold(),
+"A": discord.Color.red(),
+"B": discord.Color.orange(),
+"C": discord.Color.blue(),
+"D": discord.Color.green(),
+"E": discord.Color.light_grey()
 }
 ROLE_PREFIX = "Rank "
 
@@ -67,7 +71,7 @@ async def init_db():
     try:
         db_pool = await asyncpg.create_pool(DATABASE_URL)
         print("✅ Connected to PostgreSQL database")
-        
+
         async with db_pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -81,7 +85,7 @@ async def init_db():
                     PRIMARY KEY (guild_id, user_id)
                 )
             """)
-            
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS manual_ranks (
                     guild_id BIGINT,
@@ -90,7 +94,7 @@ async def init_db():
                     PRIMARY KEY (guild_id, user_id)
                 )
             """)
-            
+
         print("✅ Database tables created/verified")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
@@ -131,13 +135,13 @@ async def load_auto_messages_from_url():
         print("⚠️ AUTO_MESSAGES_URL not set - auto messages will be empty")
         AUTO_MESSAGES = []
         return
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(AUTO_FILE_URL) as response:
                 if response.status == 200:
                     content = await response.text()
-                    
+
                     # Try JSON format first
                     try:
                         data = json.loads(content)
@@ -147,7 +151,7 @@ async def load_auto_messages_from_url():
                             return
                     except json.JSONDecodeError:
                         pass
-                    
+
                     # If not JSON, try text format (one message per line)
                     messages = [line.strip() for line in content.split('\n') if line.strip()]
                     AUTO_MESSAGES = messages
@@ -237,29 +241,29 @@ async def send_level_up_notification(member: discord.Member, old_level: int, new
                 color=discord.Color.gold(),
                 timestamp=datetime.now(timezone.utc)
             )
-            
+
             progress_emojis = ["⬜"] * 10
             fill_count = min(new_level % 10, 10)
             for i in range(fill_count):
                 progress_emojis[i] = "🟩"
-            
+
             embed.add_field(
-                name="Level Progress", 
+                name="Level Progress",
                 value=f"`{''.join(progress_emojis)}`\n**{old_level}** → **{new_level}**",
                 inline=False
             )
-            
+
             if new_level % 10 == 0:
                 embed.add_field(
-                    name="🎯 Milestone Reached!", 
+                    name="🎯 Milestone Reached!",
                     value=f"You've reached a special level **{new_level}** milestone!",
                     inline=False
                 )
-            
+
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_author(name=f"{member.display_name}'s Level Journey", icon_url=member.display_avatar.url)
             embed.set_footer(text=f"Level {new_level} • Keep climbing! 📈")
-            
+
             await channel.send(embed=embed)
 
 # ---------- Advanced Rank Up Notification ----------
@@ -268,41 +272,41 @@ async def send_rank_up_notification(member: discord.Member, old_rank: str, new_r
         channel = client.get_channel(NOTIFICATION_CHANNEL_ID)
         if channel and channel.permissions_for(member.guild.me).send_messages:
             rank_emoji = RANK_EMOJIS.get(new_rank, "🏆")
-            
+
             embed = discord.Embed(
                 title=f"🏆 RANK PROMOTION 🏆",
                 description=f"## {member.mention} has been promoted to {rank_emoji} **{new_rank} Rank**!",
                 color=RANK_COLORS.get(new_rank, discord.Color.blue()),
                 timestamp=datetime.now(timezone.utc)
             )
-            
+
             rank_index = RANK_ORDER.index(new_rank) if new_rank in RANK_ORDER else -1
             if rank_index > 0:
                 next_rank = RANK_ORDER[rank_index - 1] if rank_index > 0 else None
                 if next_rank:
                     embed.add_field(
-                        name="Next Goal", 
+                        name="Next Goal",
                         value=f"Next rank: **{next_rank}** {RANK_EMOJIS.get(next_rank, '')}",
                         inline=True
                     )
-            
+
             embed.add_field(
-                name="Rank Progress", 
+                name="Rank Progress",
                 value=f"**{old_rank if old_rank else 'No Rank'}** → **{new_rank}** {rank_emoji}",
                 inline=True
             )
-            
+
             if new_rank in ["S+", "A"]:
                 embed.add_field(
-                    name="Elite Status", 
+                    name="Elite Status",
                     value="Welcome to the elite ranks! 🎖️",
                     inline=False
                 )
-            
+
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_author(name=f"{member.display_name}'s Rank Achievement", icon_url=member.display_avatar.url)
             embed.set_footer(text=f"{new_rank} Rank • Keep up the great work! 💪")
-            
+
             await channel.send(embed=embed)
 
 # ---------- DB helpers ----------
@@ -314,21 +318,21 @@ async def add_message(guild_id: int, user_id: int, xp: int, channel_id: int):
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (guild_id, user_id)
             DO UPDATE SET
-                total_xp = users.total_xp + $3,
-                daily_xp = users.daily_xp + $4,
-                daily_msgs = users.daily_msgs + $5,
-                last_message_ts = $6,
-                channel_id = $7
+            total_xp = users.total_xp + $3,
+            daily_xp = users.daily_xp + $4,
+            daily_msgs = users.daily_msgs + $5,
+            last_message_ts = $6,
+            channel_id = $7
         """, guild_id, user_id, xp, xp, 1, now, channel_id)
 
 async def get_user_row(guild_id: int, user_id: int):
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT total_xp, daily_msgs, daily_xp 
-            FROM users 
+            SELECT total_xp, daily_msgs, daily_xp
+            FROM users
             WHERE guild_id=$1 AND user_id=$2
         """, guild_id, user_id)
-        
+
         if not row:
             return {"total_xp": 0, "daily_msgs": 0, "daily_xp": 0}
         return {"total_xp": row['total_xp'], "daily_msgs": row['daily_msgs'], "daily_xp": row['daily_xp']}
@@ -367,7 +371,7 @@ async def get_or_create_role(guild: discord.Guild, rank_name: str):
         return role
     try:
         role = await guild.create_role(
-            name=role_name, 
+            name=role_name,
             reason="Auto-created rank role",
             color=RANK_COLORS.get(rank_name, discord.Color.default())
         )
@@ -407,16 +411,438 @@ async def evaluate_and_update_member_rank(guild: discord.Guild, member: discord.
         if daily_xp >= thresh:
             target_rank = rank
             break
-    
+
     await remove_rank_roles_from_member(guild, member)
-    
+
     if target_rank:
         await assign_rank_role_for_member(guild, member, target_rank)
-    
+
     return target_rank
 
 # ---------- Leaderboard cache ----------
 leaderboard_cache = {}
+
+# ---------- ULTRA PREMIUM RANK CARD GENERATOR ----------
+async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name: str, 
+                                   daily_xp: int, total_xp: int, progress_percentage: float,
+                                   rank_position: int, server_total: int):
+    try:
+        width, height = 900, 350  # Increased size for premium look
+        current_time = time.time()
+        
+        # Premium Color Schemes with gradient effects
+        premium_color_schemes = {
+            "S+": {
+                "gradient": [(255, 215, 0), (255, 140, 0), (255, 69, 0)],  # Gold to Orange to Red-Orange
+                "accent": (255, 223, 0),
+                "glow": (255, 215, 0, 100),
+                "text": (255, 255, 200),
+                "stats": (255, 240, 150)
+            },
+            "A": {
+                "gradient": [(255, 50, 50), (220, 20, 60), (178, 34, 34)],  # Red to Crimson to Firebrick
+                "accent": (255, 100, 100),
+                "glow": (255, 50, 50, 100),
+                "text": (255, 200, 200),
+                "stats": (255, 180, 180)
+            },
+            "B": {
+                "gradient": [(255, 165, 0), (255, 140, 0), (255, 69, 0)],  # Orange to Dark Orange to Red-Orange
+                "accent": (255, 200, 100),
+                "glow": (255, 165, 0, 100),
+                "text": (255, 220, 180),
+                "stats": (255, 210, 150)
+            },
+            "C": {
+                "gradient": [(65, 105, 225), (30, 144, 255), (0, 0, 205)],  # Royal Blue to Dodger Blue to Medium Blue
+                "accent": (100, 150, 255),
+                "glow": (65, 105, 225, 100),
+                "text": (200, 220, 255),
+                "stats": (180, 200, 255)
+            },
+            "D": {
+                "gradient": [(50, 205, 50), (32, 178, 170), (0, 128, 0)],  # Lime Green to Light Sea Green to Green
+                "accent": (100, 255, 100),
+                "glow": (50, 205, 50, 100),
+                "text": (200, 255, 200),
+                "stats": (180, 255, 180)
+            },
+            "E": {
+                "gradient": [(192, 192, 192), (169, 169, 169), (128, 128, 128)],  # Silver to Dark Gray to Gray
+                "accent": (220, 220, 220),
+                "glow": (192, 192, 192, 100),
+                "text": (230, 230, 230),
+                "stats": (210, 210, 210)
+            }
+        }
+        
+        scheme = premium_color_schemes.get(rank_name, premium_color_schemes["E"])
+        
+        # Create base image with premium gradient
+        img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        
+        # 🌈 Multi-Color Animated Gradient Background
+        time_factor = (current_time % 8) / 8
+        gradient_points = 3
+        for y in range(height):
+            # Dynamic multi-color interpolation
+            segment = (y / height) * (gradient_points - 1)
+            idx1 = min(int(segment), gradient_points - 2)
+            idx2 = idx1 + 1
+            frac = segment - idx1
+            
+            # Animate gradient with wave effect
+            wave = math.sin(time_factor * 3 * math.pi + y / 20) * 12
+            
+            r = int(scheme["gradient"][idx1][0] * (1-frac) + scheme["gradient"][idx2][0] * frac + wave)
+            g = int(scheme["gradient"][idx1][1] * (1-frac) + scheme["gradient"][idx2][1] * frac + wave)
+            b = int(scheme["gradient"][idx1][2] * (1-frac) + scheme["gradient"][idx2][2] * frac + wave)
+            
+            r = max(0, min(255, r))
+            g = max(0, min(255, g))
+            b = max(0, min(255, b))
+            
+            draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
+        
+        # ✨ Premium Floating Particles with Trails
+        random.seed(int(current_time) // 2)
+        particle_count = 25 + lvl * 3
+        
+        for i in range(particle_count):
+            x = random.randint(0, width)
+            y = random.randint(0, height)
+            size = random.randint(2, 8)
+            
+            # Animated pulsing and movement
+            pulse = (math.sin(current_time * 2 + i) + 1) * 0.5
+            move_x = math.sin(current_time + i * 0.5) * 10
+            move_y = math.cos(current_time + i * 0.3) * 8
+            
+            size = int(size * (0.7 + pulse * 0.6))
+            alpha = int(80 + pulse * 120)
+            
+            # Main particle
+            draw.ellipse([(x+move_x-size, y+move_y-size), (x+move_x+size, y+move_y+size)], 
+                        fill=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], alpha))
+            
+            # Glow trail effect
+            for trail in range(1, 4):
+                trail_alpha = alpha // (trail * 2)
+                trail_size = size - trail
+                if trail_size > 0:
+                    draw.ellipse([(x+move_x-trail*x/100-trail_size, y+move_y-trail*y/100-trail_size), 
+                                 (x+move_x-trail*x/100+trail_size, y+move_y-trail*y/100+trail_size)], 
+                                fill=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], trail_alpha))
+        
+        # 💫 Animated Light Orbs
+        orb_count = 3 + lvl // 5
+        for i in range(orb_count):
+            orb_x = random.randint(50, width-50)
+            orb_y = random.randint(50, height-50)
+            orb_size = 30 + lvl * 2
+            
+            # Orb animation
+            orb_pulse = (math.sin(current_time * 1.5 + i) + 1) * 0.5
+            current_size = int(orb_size * (0.8 + orb_pulse * 0.4))
+            orb_alpha = int(40 + orb_pulse * 35)
+            
+            # Draw light orb with gradient
+            for r in range(current_size, 0, -2):
+                alpha = orb_alpha * (r / current_size)
+                draw.ellipse([(orb_x-r, orb_y-r), (orb_x+r, orb_y+r)], 
+                            outline=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], int(alpha)))
+        
+        # 🏆 Premium Glass Morphism Panel
+        panel_margin = 25
+        panel_width = width - 2 * panel_margin
+        panel_height = height - 2 * panel_margin
+        
+        # Glass effect background
+        glass_bg = Image.new('RGBA', (panel_width, panel_height), (255, 255, 255, 40))
+        glass_draw = ImageDraw.Draw(glass_bg)
+        
+        # Glass panel rounded rectangle
+        glass_draw.rounded_rectangle([(0, 0), (panel_width, panel_height)], radius=25, 
+                                   fill=(255, 255, 255, 30), outline=(255, 255, 255, 80), width=2)
+        
+        # Apply blur effect for glass morphism
+        glass_bg = glass_bg.filter(ImageFilter.GaussianBlur(radius=5))
+        img.paste(glass_bg, (panel_margin, panel_margin), glass_bg)
+        
+        # 👑 User Section
+        avatar_size = 100
+        avatar_x, avatar_y = panel_margin + 30, panel_margin + 30
+        
+        try:
+            # Premium avatar processing
+            avatar_asset = member.avatar or member.default_avatar
+            avatar_data = await avatar_asset.read()
+            avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
+            avatar_img = avatar_img.resize((avatar_size, avatar_size))
+            
+            # Create circular mask with anti-aliasing
+            mask = Image.new('L', (avatar_size, avatar_size), 0)
+            draw_mask = ImageDraw.Draw(mask)
+            draw_mask.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+            
+            # Apply mask and add to image
+            avatar_img.putalpha(mask)
+            
+            # Avatar shadow effect
+            shadow_offset = 3
+            shadow_img = Image.new('RGBA', (avatar_size+shadow_offset*2, avatar_size+shadow_offset*2), (0, 0, 0, 100))
+            img.paste(shadow_img, (avatar_x-shadow_offset, avatar_y-shadow_offset), shadow_img)
+            
+            img.paste(avatar_img, (avatar_x, avatar_y), avatar_img)
+            
+            # Animated premium border
+            border_thickness = 4 + int(math.sin(current_time * 2) * 1.5)
+            draw.ellipse(
+                [(avatar_x-7, avatar_y-7), (avatar_x+avatar_size+7, avatar_y+avatar_size+7)],
+                outline=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], 255),
+                width=border_thickness
+            )
+            
+            # Crown badge for top ranks
+            if rank_position <= 3:
+                crown_emoji = ["👑", "🥈", "🥉"][rank_position-1]
+                crown_size = 30
+                draw.text((avatar_x + avatar_size - crown_size, avatar_y - 10), crown_emoji, 
+                         font=ImageFont.load_default(), fill=(255, 255, 255, 255))
+                
+        except Exception as e:
+            print(f"Avatar error: {e}")
+        
+        # Load premium fonts (you'll need to add these fonts to your fonts folder)
+        try:
+            # Try to load fancy fonts
+            font_path_bold = os.path.join("fonts", "montserrat-bold.ttf")
+            font_path_regular = os.path.join("fonts", "montserrat-regular.ttf")
+            font_path_light = os.path.join("fonts", "montserrat-light.ttf")
+            
+            if os.path.exists(font_path_bold):
+                font_xlarge = ImageFont.truetype(font_path_bold, 32)
+                font_large = ImageFont.truetype(font_path_bold, 24)
+                font_medium = ImageFont.truetype(font_path_regular, 20)
+                font_small = ImageFont.truetype(font_path_light, 16)
+            else:
+                # Fallback to default fonts
+                font_xlarge = ImageFont.load_default()
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+        except:
+            font_xlarge = ImageFont.load_default()
+            font_large = ImageFont.load_default()
+            font_medium = ImageFont.load_default()
+            font_small = ImageFont.load_default()
+        
+        # 📝 Premium Text Rendering with Shadows
+        text_x = avatar_x + avatar_size + 30
+        
+        # Username with shadow
+        username = member.display_name[:18] + "..." if len(member.display_name) > 18 else member.display_name
+        draw.text((text_x+1, avatar_y+1), username, font=font_xlarge, fill=(0, 0, 0, 150))
+        draw.text((text_x, avatar_y), username, font=font_xlarge, fill=scheme["text"])
+        
+        # Rank and position with premium styling
+        rank_display = f"{RANK_EMOJIS.get(rank_name, '⚡')} {rank_name} Rank"
+        position_display = f"#{rank_position} / {server_total}"
+        
+        draw.text((text_x+1, avatar_y+45+1), rank_display, font=font_medium, fill=(0, 0, 0, 150))
+        draw.text((text_x, avatar_y+45), rank_display, font=font_medium, fill=scheme["stats"])
+        
+        position_width = draw.textlength(position_display, font=font_small)
+        draw.text((width - panel_margin - position_width-1, avatar_y+48+1), position_display, font=font_small, fill=(0, 0, 0, 150))
+        draw.text((width - panel_margin - position_width, avatar_y+48), position_display, font=font_small, fill=scheme["stats"])
+        
+        # Level display with premium badge
+        level_badge_x = width - panel_margin - 80
+        level_badge_y = avatar_y
+        draw.ellipse([(level_badge_x-40, level_badge_y-40), (level_badge_x+40, level_badge_y+40)], 
+                    fill=(scheme["gradient"][0][0], scheme["gradient"][0][1], scheme["gradient"][0][2], 200),
+                    outline=(255, 255, 255, 255), width=3)
+        
+        level_text = f"{lvl}"
+        text_width = draw.textlength(level_text, font=font_large)
+        draw.text((level_badge_x-text_width/2+1, level_badge_y-12+1), level_text, font=font_large, fill=(0, 0, 0, 150))
+        draw.text((level_badge_x-text_width/2, level_badge_y-12), level_text, font=font_large, fill=(255, 255, 255, 255))
+        
+        draw.text((level_badge_x-20+1, level_badge_y+15+1), "LEVEL", font=font_small, fill=(0, 0, 0, 150))
+        draw.text((level_badge_x-20, level_badge_y+15), "LEVEL", font=font_small, fill=(255, 255, 255, 255))
+        
+        # 📊 Premium Progress Bar with Multiple Effects
+        progress_width = 600
+        progress_height = 25
+        progress_x, progress_y = text_x, avatar_y + 100
+        
+        # Background with inner shadow
+        draw.rounded_rectangle(
+            [(progress_x, progress_y), (progress_x+progress_width, progress_y+progress_height)],
+            radius=12, fill=(30, 30, 30, 200), outline=(60, 60, 60, 255), width=1
+        )
+        
+        # Animated progress fill with multiple effects
+        fill_width = int(progress_width * (progress_percentage / 100))
+        if fill_width > 0:
+            # Main gradient fill
+            for i in range(fill_width):
+                color_ratio = i / fill_width
+                r = int(scheme["gradient"][0][0] * (1-color_ratio) + scheme["gradient"][-1][0] * color_ratio)
+                g = int(scheme["gradient"][0][1] * (1-color_ratio) + scheme["gradient"][-1][1] * color_ratio)
+                b = int(scheme["gradient"][0][2] * (1-color_ratio) + scheme["gradient"][-1][2] * color_ratio)
+                
+                draw.rectangle(
+                    [(progress_x+i, progress_y), (progress_x+i+1, progress_y+progress_height)],
+                    fill=(r, g, b, 255)
+                )
+            
+            # Moving light effect
+            light_pos = (current_time * 200) % progress_width
+            light_width = 50
+            for i in range(max(0, light_pos-light_width), min(fill_width, light_pos+light_width)):
+                intensity = 1.0 - abs(i - light_pos) / light_width
+                if intensity > 0:
+                    r, g, b = img.getpixel((progress_x+i, progress_y+progress_height//2))[:3]
+                    r = min(255, r + int(intensity * 50))
+                    g = min(255, g + int(intensity * 50))
+                    b = min(255, b + int(intensity * 50))
+                    draw.rectangle(
+                        [(progress_x+i, progress_y), (progress_x+i+1, progress_y+progress_height)],
+                        fill=(r, g, b, 255)
+                    )
+        
+        # Progress bar cap with rounded end
+        if fill_width > 0:
+            draw.rounded_rectangle(
+                [(progress_x, progress_y), (progress_x+min(fill_width, progress_width), progress_y+progress_height)],
+                radius=12, fill=None, outline=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], 255), width=2
+            )
+        
+        # XP Stats with premium layout
+        stats_y = progress_y + 40
+        
+        # Daily XP
+        daily_text = f"⭐ {daily_xp} XP (24h)"
+        draw.text((progress_x+1, stats_y+1), daily_text, font=font_medium, fill=(0, 0, 0, 150))
+        draw.text((progress_x, stats_y), daily_text, font=font_medium, fill=scheme["stats"])
+        
+        # Total XP
+        total_text = f"📊 {total_xp} Total XP"
+        total_width = draw.textlength(total_text, font=font_medium)
+        draw.text((progress_x+progress_width-total_width+1, stats_y+1), total_text, font=font_medium, fill=(0, 0, 0, 150))
+        draw.text((progress_x+progress_width-total_width, stats_y), total_text, font=font_medium, fill=scheme["stats"])
+        
+        # Progress percentage
+        progress_text = f"{progress_percentage:.1f}% to Level {lvl+1}"
+        text_width = draw.textlength(progress_text, font=font_small)
+        draw.text((progress_x + (progress_width - text_width) / 2 + 1, progress_y + progress_height + 10 + 1), 
+                 progress_text, font=font_small, fill=(0, 0, 0, 150))
+        draw.text((progress_x + (progress_width - text_width) / 2, progress_y + progress_height + 10), 
+                 progress_text, font=font_small, fill=scheme["stats"])
+        
+        # ⚡ Final Premium Touches
+        # Add subtle noise overlay for texture
+        noise = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        noise_draw = ImageDraw.Draw(noise)
+        for i in range(width // 2):
+            for j in range(height // 2):
+                if random.random() > 0.7:
+                    alpha = random.randint(5, 15)
+                    noise_draw.point((i*2, j*2), fill=(255, 255, 255, alpha))
+        img = Image.alpha_composite(img, noise)
+        
+        # Apply subtle vignette effect
+        vignette = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        vignette_draw = ImageDraw.Draw(vignette)
+        for y in range(height):
+            for x in range(width):
+                # Calculate distance from center
+                dx = (x - width/2) / (width/2)
+                dy = (y - height/2) / (height/2)
+                distance = math.sqrt(dx*dx + dy*dy)
+                
+                # Apply vignette based on distance
+                vignette_strength = min(100, int(distance * 200))
+                if vignette_strength > 0:
+                    vignette_draw.point((x, y), fill=(0, 0, 0, vignette_strength))
+        
+        img = Image.alpha_composite(img, vignette)
+        
+        # Convert to bytes with optimization
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format='PNG', optimize=True, compress_level=9)
+        img_bytes.seek(0)
+        
+        return img_bytes
+        
+    except Exception as e:
+        print(f"Error generating premium rank card: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# ---------- Enhanced Rank Command with Premium Image ----------
+@tree.command(name="rank", description="Show your premium rank card")
+async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    if interaction.guild is None:
+        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+
+    # Get user data
+    row = await get_user_row(interaction.guild.id, member.id)
+    total_xp = row['total_xp']
+    daily_xp = row['daily_xp']
+    lvl = compute_level_from_total_xp(total_xp)
+
+    # Get rank
+    forced_rank = await get_manual_rank(interaction.guild.id, member.id)
+    if forced_rank:
+        rank_name = forced_rank
+    else:
+        rank_name = None
+        for r, thresh in RANKS:
+            if daily_xp >= thresh:
+                rank_name = r
+                break
+        rank_name = rank_name or "E"
+
+    # Calculate progress
+    current_level_xp = total_xp_to_reach_level(lvl)
+    next_level_xp = total_xp_to_reach_level(lvl + 1)
+    xp_progress = total_xp - current_level_xp
+    xp_needed = next_level_xp - current_level_xp
+    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
+
+    # Get rank position and total users
+    async with db_pool.acquire() as conn:
+        rank_position = await conn.fetchval("""
+            SELECT COUNT(*) + 1 FROM users 
+            WHERE guild_id = $1 AND daily_xp > $2
+        """, interaction.guild.id, daily_xp)
+        
+        server_total = await conn.fetchval("""
+            SELECT COUNT(*) FROM users WHERE guild_id = $1
+        """, interaction.guild.id)
+
+    # Generate premium rank card
+    img_bytes = await generate_premium_rank_card(
+        member, lvl, rank_name, daily_xp, total_xp, 
+        progress_percentage, rank_position, server_total
+    )
+
+    if img_bytes:
+        file = discord.File(img_bytes, filename="premium_rank.png")
+        await interaction.response.send_message(file=file)
+    else:
+        # Fallback to simple message
+        await interaction.response.send_message(
+            f"**{member.display_name}'s Rank**\n"
+            f"Level: {lvl} | Rank: {rank_name} (#{rank_position})\n"
+            f"XP: {daily_xp}/24h | Total: {total_xp}\n"
+            f"Progress: {progress_percentage:.1f}% to next level"
+        )
 
 # ---------- STATUS / COUNTER / AUTO TASKS ----------
 async def status_loop():
@@ -475,36 +901,36 @@ async def counter_updater():
 async def auto_message_task():
     await client.wait_until_ready()
     channel = client.get_channel(AUTO_CHANNEL_ID)
-    
+
     # Debug info
     print(f"🔄 Auto message task started")
     print(f"📝 Loaded {len(AUTO_MESSAGES)} messages")
     print(f"📢 Target channel ID: {AUTO_CHANNEL_ID}")
-    
+
     if not channel:
         print(f"❌ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
         return
-    
+
     print(f"✅ Found channel: {channel.name} ({channel.id})")
-    
+
     while not client.is_closed():
         try:
             # Reload messages every 6 hours
             if AUTO_FILE_URL and int(time.time()) % 21600 == 0:
                 print("🔄 Reloading messages from URL...")
                 await load_auto_messages_from_url()
-                
+
             if AUTO_MESSAGES:
                 msg = random.choice(AUTO_MESSAGES)
-                print(f"📤 Sending message: {msg[:50]}...")  # First 50 chars
+                print(f"📤 Sending message: {msg[:50]}...") # First 50 chars
                 await channel.send(msg)
                 print("✅ Message sent successfully")
             else:
                 print("⚠️ No auto messages available to send")
-                
+
         except Exception as e:
             print(f"❌ Auto message error: {e}")
-        
+
         print(f"⏳ Waiting {AUTO_INTERVAL} seconds...")
         await asyncio.sleep(AUTO_INTERVAL)
 
@@ -512,7 +938,7 @@ async def auto_message_task():
 async def evaluate_and_reset_for_guild(guild: discord.Guild):
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("SELECT user_id, daily_xp FROM users WHERE guild_id=$1", guild.id)
-    
+
     for row in rows:
         uid, dxp = row['user_id'], row['daily_xp']
         member = guild.get_member(uid)
@@ -522,7 +948,7 @@ async def evaluate_and_reset_for_guild(guild: discord.Guild):
             await evaluate_and_update_member_rank(guild, member, dxp)
         except Exception as e:
             print(f"⚠️ Rank update error for {member}: {e}")
-    
+
     await reset_all_daily(guild.id)
     leaderboard_cache.pop(guild.id, None)
     print(f"✅ Daily reset completed for {guild.name}")
@@ -642,9 +1068,9 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
             await new_ch.edit(name=f"{channel_name} {interaction.guild.member_count}")
         except Exception:
             pass
-        if interaction.guild.id not in counter_channels:
-            counter_channels[interaction.guild.id] = {}
-        counter_channels[interaction.guild.id][new_ch.id] = channel_name
+    if interaction.guild.id not in counter_channels:
+        counter_channels[interaction.guild.id] = {}
+    counter_channels[interaction.guild.id][new_ch.id] = channel_name
     await interaction.response.send_message(f"✅ Counter created: {new_ch.mention}", ephemeral=True)
 
 @tree.command(name="setcustomstatus", description="Set a custom status (Admin only)")
@@ -666,11 +1092,11 @@ async def setdefaultstatus(interaction: discord.Interaction):
 async def testauto(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    
+
     channel = client.get_channel(AUTO_CHANNEL_ID)
     if not channel:
         return await interaction.response.send_message(f"❌ Channel {AUTO_CHANNEL_ID} not found", ephemeral=True)
-    
+
     await interaction.response.send_message(
         f"✅ Auto message system status:\n"
         f"• Channel: {channel.mention} ({AUTO_CHANNEL_ID})\n"
@@ -702,7 +1128,7 @@ async def on_message(message: discord.Message):
                     await message.channel.send(f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.", delete_after=8)
                 except Exception:
                     pass
-                
+
                 # Automatically send to hardcoded report channel
                 log_ch = client.get_channel(REPORT_CHANNEL_ID)
                 if log_ch:
@@ -721,14 +1147,14 @@ async def on_message(message: discord.Message):
                 await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete_after=8)
             except Exception:
                 pass
-            
+
             # Automatically send to hardcoded report channel
             log_ch = client.get_channel(REPORT_CHANNEL_ID)
             if log_ch:
                 try:
                     await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
                 except Exception:
-                    pass
+                pass
             return
 
     if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
@@ -745,24 +1171,24 @@ async def on_message(message: discord.Message):
 
         xp = xp_for_message(message.content)
         await add_message(message.guild.id, message.author.id, xp, message.channel.id)
-        
+
         new_data = await get_user_row(message.guild.id, message.author.id)
         new_level = compute_level_from_total_xp(new_data['total_xp'])
-        
+
         new_rank = None
         for r, thresh in RANKS:
             if new_data['daily_xp'] >= thresh:
                 new_rank = r
                 break
-        
+
         current_rank = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
-        
+
         if new_level > old_level:
             await send_level_up_notification(message.author, old_level, new_level)
-        
+
         if new_rank != old_rank:
             await send_rank_up_notification(message.author, old_rank, new_rank)
-            
+
     except Exception as e:
         print("⚠️ XP add error:", e)
 
@@ -772,100 +1198,18 @@ async def on_message(message: discord.Message):
         except Exception:
             pass
 
-# ---------- Enhanced Rank Command ----------
-@tree.command(name="rank", description="Show your rank and level")
-async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
-    member = member or interaction.user
-    if interaction.guild is None:
-        return await interaction.response.send_message("Guild-only.", ephemeral=True)
-    
-    row = await get_user_row(interaction.guild.id, member.id)
-    total_xp = row['total_xp']
-    daily_xp = row['daily_xp']
-    
-    lvl = compute_level_from_total_xp(total_xp)
-    
-    forced_rank = await get_manual_rank(interaction.guild.id, member.id)
-    if forced_rank:
-        rank_name = forced_rank
-        rank_source = " (Admin Set)"
-    else:
-        rank_name = None
-        for r, thresh in RANKS:
-            if daily_xp >= thresh:
-                rank_name = r
-                break
-        rank_source = ""
-
-    current_level_xp = total_xp_to_reach_level(lvl)
-    next_level_xp = total_xp_to_reach_level(lvl + 1)
-    xp_progress = total_xp - current_level_xp
-    xp_needed = next_level_xp - current_level_xp
-    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
-    
-    rank_emoji = RANK_EMOJIS.get(rank_name, "🔹")
-    embed_color = RANK_COLORS.get(rank_name, discord.Color.blurple())
-    
-    embed = discord.Embed(
-        title=f"{rank_emoji} {member.display_name}'s Rank Stats",
-        color=embed_color,
-        timestamp=datetime.now(timezone.utc)
-    )
-    
-    embed.set_thumbnail(url=member.display_avatar.url)
-    
-    rank_value = f"{rank_emoji} **{rank_name}**{rank_source}" if rank_name else "🔸 **No Rank Yet**"
-    embed.add_field(name="🏆 Current Rank", value=rank_value, inline=True)
-    
-    embed.add_field(name="📈 Level", value=f"**{lvl}**", inline=True)
-    
-    embed.add_field(name="💎 Total XP", value=f"**{total_xp}**", inline=True)
-    
-    filled_blocks = int(progress_percentage / 10)
-    progress_bar = "🟩" * filled_blocks + "⬜" * (10 - filled_blocks)
-    
-    embed.add_field(
-        name="🚀 Level Progress", 
-        value=f"{progress_bar}\n**{xp_progress}**/{xp_needed} XP (**{progress_percentage:.1f}%**)",
-        inline=False
-    )
-    
-    embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**", inline=True)
-    
-    next_rank = None
-    if rank_name:
-        current_rank_index = RANK_ORDER.index(rank_name)
-        if current_rank_index > 0:
-            next_rank = RANKS[current_rank_index - 1]
-    else:
-        next_rank = RANKS[-1]
-    
-    if next_rank:
-        xp_needed = max(0, next_rank[1] - daily_xp)
-        next_emoji = RANK_EMOJIS.get(next_rank[0], "⚡")
-        embed.add_field(
-            name=f"{next_emoji} Next Rank", 
-            value=f"**{next_rank[0]}** - {xp_needed} XP needed",
-            inline=True
-        )
-    
-    rank_info = " | ".join([f"{r}: {t} XP" for r, t in RANKS])
-    embed.set_footer(text=f"Rank Requirements: {rank_info}")
-    
-    await interaction.response.send_message(embed=embed)
-
 # ---------- Advanced Leaderboard Command ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
     if not guild:
         return await interaction.response.send_message("Guild-only.", ephemeral=True)
-    
+
     now_ts = time.time()
     cache = leaderboard_cache.get(guild.id)
     if cache and now_ts - cache[0] < 60:
         return await interaction.response.send_message(embed=cache[1])
-    
+
     embed = await build_leaderboard_embed(guild)
     leaderboard_cache[guild.id] = (now_ts, embed)
     await interaction.response.send_message(embed=embed)
@@ -873,54 +1217,54 @@ async def leaderboard(interaction: discord.Interaction):
 async def build_leaderboard_embed(guild: discord.Guild):
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT user_id, daily_xp, total_xp 
-            FROM users 
+            SELECT user_id, daily_xp, total_xp
+            FROM users
             WHERE guild_id=$1
-            ORDER BY daily_xp DESC 
+            ORDER BY daily_xp DESC
             LIMIT 15
         """, guild.id)
-    
+
     embed = discord.Embed(
-        title=f"🏆 {guild.name} — Daily Leaderboard", 
+        title=f"🏆 {guild.name} — Daily Leaderboard",
         color=discord.Color.gold(),
         timestamp=datetime.now(timezone.utc)
     )
-    
+
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
-    
+
     desc = ""
     medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "⑪", "⑫", "⑬", "⑭", "⑮"]
-    
+
     for idx, row in enumerate(rows):
         uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
         member = guild.get_member(uid)
         name = member.display_name if member else f"User {uid}"
         lvl = compute_level_from_total_xp(txp)
-        
+
         user_rank = None
         for r, thresh in RANKS:
             if dxp >= thresh:
                 user_rank = r
                 break
-        
+
         rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
         medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
-        
+
         # Show rank name instead of just emoji
         rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
-        
+
         desc += f"{medal} **{name}**\n"
-        desc += f"   {rank_display} • ⭐ {dxp} XP (24h) • 📈 Lv {lvl}\n\n"
-    
+        desc += f" {rank_display} • ⭐ {dxp} XP (24h) • 📈 Lv {lvl}\n\n"
+
     if not desc:
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
-    
+
     embed.description = desc
-    
+
     rank_guide = " | ".join([f"{RANK_EMOJIS.get(r, '')} {r}" for r in RANK_ORDER])
     embed.set_footer(text=f"Ranks: {rank_guide} | Reset daily at 12:00 AM PKT")
-    
+
     return embed
 
 # ---------- Admin Rank Commands ----------
@@ -963,39 +1307,37 @@ async def resetleaderboard(interaction: discord.Interaction):
 @client.event
 async def on_ready():
     await init_db()
-    
+
     # Load auto messages from external URL
     await load_auto_messages_from_url()
-    
+
     # Channel verification
     channel = client.get_channel(AUTO_CHANNEL_ID)
     if channel:
         print(f"✅ Auto message channel found: #{channel.name}")
     else:
         print(f"❌ ERROR: Auto channel {AUTO_CHANNEL_ID} not found!")
-    
+
     # Report channel verification
     report_channel = client.get_channel(REPORT_CHANNEL_ID)
     if report_channel:
         print(f"✅ Report channel found: #{report_channel.name}")
     else:
         print(f"❌ ERROR: Report channel {REPORT_CHANNEL_ID} not found!")
-    
+
     try:
         if not hasattr(client, 'commands_synced'):
             await tree.sync()
             client.commands_synced = True
             print(f"✅ Commands synced successfully. Logged in as: {client.user}")
-            
-            print("📋 Registered Commands:")
-            for command in tree.get_commands():
-                print(f"  /{command.name} - {command.description}")
-                
-        else:
-            print(f"✅ Bot is ready. Commands already synced. Logged in as: {client.user}")
+
+        print("📋 Registered Commands:")
+        for command in tree.get_commands():
+            print(f" /{command.name} - {command.description}")
+
     except Exception as e:
         print(f"⚠️ Sync error: {e}")
-    
+
     client.loop.create_task(status_loop())
     client.loop.create_task(counter_updater())
     client.loop.create_task(auto_message_task())
