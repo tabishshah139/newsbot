@@ -1066,8 +1066,8 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
     if guild_counter:
         try:
             await new_ch.edit(name=f"{channel_name} {interaction.guild.member_count}")
-        except Exception:
-            pass
+             except Exception:
+                pass
     if interaction.guild.id not in counter_channels:
         counter_channels[interaction.guild.id] = {}
     counter_channels[interaction.guild.id][new_ch.id] = channel_name
@@ -1154,7 +1154,7 @@ async def on_message(message: discord.Message):
                 try:
                     await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
                 except Exception:
-                pass
+                    pass
             return
 
     if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
@@ -1354,3 +1354,4 @@ if __name__ == "__main__":
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
+
