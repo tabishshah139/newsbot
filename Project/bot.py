@@ -18,7 +18,7 @@ import aiohttp
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID_ENV = os.getenv("GUILD_ID")
-AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL")  # URL to your GitHub raw content
+AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL")  # GitHub raw URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
@@ -128,7 +128,7 @@ def parse_message_link(link: str):
 async def load_auto_messages_from_url():
     global AUTO_MESSAGES
     if not AUTO_FILE_URL:
-        print("⚠️ AUTO_FILE_URL not set - auto messages will be empty")
+        print("⚠️ AUTO_MESSAGES_URL not set - auto messages will be empty")
         AUTO_MESSAGES = []
         return
     
@@ -137,20 +137,21 @@ async def load_auto_messages_from_url():
             async with session.get(AUTO_FILE_URL) as response:
                 if response.status == 200:
                     content = await response.text()
-                    # Try to parse as JSON first
+                    
+                    # Try JSON format first
                     try:
                         data = json.loads(content)
                         if isinstance(data, list):
                             AUTO_MESSAGES = data
-                            print(f"✅ Loaded {len(AUTO_MESSAGES)} auto messages from URL")
+                            print(f"✅ Loaded {len(AUTO_MESSAGES)} auto messages from URL (JSON format)")
                             return
                     except json.JSONDecodeError:
                         pass
                     
-                    # If not JSON, try to parse as plain text with one message per line
+                    # If not JSON, try text format (one message per line)
                     messages = [line.strip() for line in content.split('\n') if line.strip()]
                     AUTO_MESSAGES = messages
-                    print(f"✅ Loaded {len(AUTO_MESSAGES)} auto messages from URL")
+                    print(f"✅ Loaded {len(AUTO_MESSAGES)} auto messages from URL (Text format)")
                 else:
                     print(f"⚠️ Failed to load auto messages from URL: HTTP {response.status}")
                     AUTO_MESSAGES = []
@@ -244,7 +245,7 @@ async def send_level_up_notification(member: discord.Member, old_level: int, new
             
             embed.add_field(
                 name="Level Progress", 
-                value=f"`{''.join(progress_emojis)}`\n**{old_level}** → **{new_level}**",
+                value=f"`{''.join(progress_emojies)}`\n**{old_level}** → **{new_level}**",
                 inline=False
             )
             
@@ -474,19 +475,37 @@ async def counter_updater():
 async def auto_message_task():
     await client.wait_until_ready()
     channel = client.get_channel(AUTO_CHANNEL_ID)
+    
+    # Debug info
+    print(f"🔄 Auto message task started")
+    print(f"📝 Loaded {len(AUTO_MESSAGES)} messages")
+    print(f"📢 Target channel ID: {AUTO_CHANNEL_ID}")
+    
     if not channel:
-        print(f"⚠️ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
+        print(f"❌ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
+        return
+    
+    print(f"✅ Found channel: {channel.name} ({channel.id})")
+    
     while not client.is_closed():
         try:
-            # Reload messages from URL periodically (every 6 hours)
+            # Reload messages every 6 hours
             if AUTO_FILE_URL and int(time.time()) % 21600 == 0:
+                print("🔄 Reloading messages from URL...")
                 await load_auto_messages_from_url()
                 
             if AUTO_MESSAGES:
                 msg = random.choice(AUTO_MESSAGES)
+                print(f"📤 Sending message: {msg[:50]}...")  # First 50 chars
                 await channel.send(msg)
+                print("✅ Message sent successfully")
+            else:
+                print("⚠️ No auto messages available to send")
+                
         except Exception as e:
-            print(f"⚠️ auto_message_task error: {e}")
+            print(f"❌ Auto message error: {e}")
+        
+        print(f"⏳ Waiting {AUTO_INTERVAL} seconds...")
         await asyncio.sleep(AUTO_INTERVAL)
 
 # ---------- Daily reset (cron Asia/Karachi 00:00) ----------
@@ -649,6 +668,24 @@ async def setreport(interaction: discord.Interaction, channel_id: str):
     REPORT_CHANNELS[interaction.guild.id] = int(channel_id)
     ch = interaction.guild.get_channel(int(channel_id))
     await interaction.response.send_message(f"✅ Reports will be sent to {ch.mention}", ephemeral=True)
+
+@tree.command(name="testauto", description="Test auto message system")
+async def testauto(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
+    
+    channel = client.get_channel(AUTO_CHANNEL_ID)
+    if not channel:
+        return await interaction.response.send_message(f"❌ Channel {AUTO_CHANNEL_ID} not found", ephemeral=True)
+    
+    await interaction.response.send_message(
+        f"✅ Auto message system status:\n"
+        f"• Channel: {channel.mention} ({AUTO_CHANNEL_ID})\n"
+        f"• Messages loaded: {len(AUTO_MESSAGES)}\n"
+        f"• Interval: {AUTO_INTERVAL} seconds\n"
+        f"• Next message in: {AUTO_INTERVAL} seconds",
+        ephemeral=True
+    )
 
 # ---------- MESSAGE FILTER + XP tracking (FIXED FOR ADMINS) ----------
 @client.event
@@ -933,6 +970,13 @@ async def on_ready():
     
     # Load auto messages from external URL
     await load_auto_messages_from_url()
+    
+    # Channel verification
+    channel = client.get_channel(AUTO_CHANNEL_ID)
+    if channel:
+        print(f"✅ Auto message channel found: #{channel.name}")
+    else:
+        print(f"❌ ERROR: Auto channel {AUTO_CHANNEL_ID} not found!")
     
     try:
         if not hasattr(client, 'commands_synced'):
