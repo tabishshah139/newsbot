@@ -172,7 +172,7 @@ except Exception as e:
     print(f"⚠️ Error loading badwords.txt: {e}")
 
 # ---------- Autocomplete helpers ----------
-async def channel_autocomplete(interaction: discord.Interaction, current: str):
+async def channel_autocomplete(interaction: discord.InterInteraction, current: str):
     choices = []
     guild = interaction.guild
     if not guild:
@@ -430,7 +430,6 @@ async def status_loop():
         except Exception:
             target_guild = None
     
-    status_index = 0
     while not client.is_closed():
         try:
             guild = target_guild or (client.guilds[0] if client.guilds else None)
@@ -438,30 +437,33 @@ async def status_loop():
                 await asyncio.sleep(5)
                 continue
             
+            # Custom status check (priority)
             if custom_status.get(guild.id):
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=custom_status[guild.id]))
                 await asyncio.sleep(STATUS_SWITCH_SECONDS)
                 continue
             
-            # Rotate through different statuses
-            if status_index % 3 == 0:
-                count = guild.member_count
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Members: {count}"))
-            elif status_index % 3 == 1:
-                last = last_joined_member.get(guild.id)
-                if last:
-                    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
-                else:
-                    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Active & Online"))
-            else:
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="the leaderboard"))
+            # ✅ APKA ORIGINAL STATUS LOOP WAPIS
+            # 1. Member count status
+            count = guild.member_count
+            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Members: {count}"))
+            await asyncio.sleep(STATUS_SWITCH_SECONDS)
             
-            status_index += 1
+            # 2. Welcome recent member status
+            last = last_joined_member.get(guild.id)
+            if last:
+                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
+            else:
+                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Active & Online"))
+            await asyncio.sleep(STATUS_SWITCH_SECONDS)
+            
+            # 3. Leaderboard watching status
+            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="the leaderboard"))
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
             
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
-            await asyncio.sleep(30)  # Longer sleep on error
+            await asyncio.sleep(30)
 
 async def counter_updater():
     await client.wait_until_ready()
@@ -716,7 +718,11 @@ async def setcustomstatus(interaction: discord.Interaction, message: str):
 async def setdefaultstatus(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    custom_status[interaction.guild.id] = None
+    
+    # Guild ID ke hisaab se custom status clear karo
+    if interaction.guild.id in custom_status:
+        custom_status[interaction.guild.id] = None
+    
     await interaction.response.send_message("✅ Default status loop resumed", ephemeral=True)
 
 @tree.command(name="testauto", description="Test auto message system")
@@ -911,15 +917,12 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
 
     await interaction.response.send_message(embed=embed)
 
-# ---------- Advanced Leaderboard Command ----------
+# ---------- Fixed Leaderboard Command (No Duplication) ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
     if not guild:
         return await interaction.response.send_message("Guild-only.", ephemeral=True)
-
-    # Clean up left users before showing leaderboard
-    await cleanup_left_users()
     
     now_ts = time.time()
     cache = leaderboard_cache.get(guild.id)
@@ -937,7 +940,7 @@ async def build_leaderboard_embed(guild: discord.Guild):
             FROM users
             WHERE guild_id=$1
             ORDER BY daily_xp DESC
-            LIMIT 15
+            LIMIT 10
         """, guild.id)
 
     embed = discord.Embed(
@@ -950,15 +953,13 @@ async def build_leaderboard_embed(guild: discord.Guild):
         embed.set_thumbnail(url=guild.icon.url)
 
     desc = ""
-    medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "⑪", "⑫", "⑬", "⑭", "⑮"]
+    medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
     for idx, row in enumerate(rows):
         uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
         member = guild.get_member(uid)
         
         if member:
-            # User ke profile picture ka URL
-            avatar_url = member.display_avatar.url
             name = member.display_name
             lvl = compute_level_from_total_xp(txp)
 
@@ -971,34 +972,16 @@ async def build_leaderboard_embed(guild: discord.Guild):
             rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
             medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
 
-            # Profile picture ke saath user entry (LEFT SIDE with proper avatar display)
+            # Sirf ek entry dikhao - Top 3 ke liye medal, baaki ke liye number
             rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
-            
-            # Use Discord's embed field with avatar as icon
-            desc += f"{medal} **{name}**\n"
-            desc += f"  {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
+            desc += f"{medal} **{name}** - {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
 
     if not desc:
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
 
     embed.description = desc
 
-    # Add avatar images as fields for visual display
-    active_members = 0
-    for idx, row in enumerate(rows):
-        if idx >= 3:  # Only show top 3 avatars
-            break
-            
-        uid = row['user_id']
-        member = guild.get_member(uid)
-        if member:
-            active_members += 1
-            embed.add_field(
-                name=f"🥇 Top {idx+1}" if idx == 0 else f"🥈 Top {idx+1}" if idx == 1 else f"🥉 Top {idx+1}",
-                value=member.mention,
-                inline=True
-            )
-
+    # Top 3 members ko alag se fields mein na dikhao (yehi duplication cause kar raha tha)
     rank_guide = " | ".join([f"{RANK_EMOJIS.get(r, '')} {r}" for r in RANK_ORDER])
     embed.set_footer(text=f"Ranks: {rank_guide} | Reset daily at 12:00 AM PKT")
 
