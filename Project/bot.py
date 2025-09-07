@@ -16,7 +16,7 @@ import aiohttp
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID_ENV = os.getenv("GUILD_ID")
+GUILD_ID_ENV = os.getenv("GUID_ID")
 AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL") # GitHub raw URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
@@ -916,23 +916,45 @@ async def build_leaderboard_embed(guild: discord.Guild):
     for idx, row in enumerate(rows):
         uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
         member = guild.get_member(uid)
-        name = member.display_name if member else f"User {uid}"
-        lvl = compute_level_from_total_xp(txp)
+        
+        if member:
+            # User ke profile picture ka URL
+            avatar_url = member.display_avatar.url
+            name = member.display_name
+            lvl = compute_level_from_total_xp(txp)
 
-        user_rank = None
-        for r, thresh in RANKS:
-            if dxp >= thresh:
-                user_rank = r
-                break
+            user_rank = None
+            for r, thresh in RANKS:
+                if dxp >= thresh:
+                    user_rank = r
+                    break
 
-        rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
-        medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
+            rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
+            medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
 
-        # Show rank name instead of just emoji
-        rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
+            # Profile picture ke saath user entry
+            rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
+            
+            desc += f"{medal} [**{name}**]({avatar_url})\n"
+            desc += f"  {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
+        else:
+            # Agar member server mein nahi hai
+            name = f"User {uid}"
+            lvl = compute_level_from_total_xp(txp)
+            
+            user_rank = None
+            for r, thresh in RANKS:
+                if dxp >= thresh:
+                    user_rank = r
+                    break
 
-        desc += f"{medal} **{name}**\n"
-        desc += f" {rank_display} • ⭐ {dxp} XP (24h) • 📈 Lv {lvl}\n\n"
+            rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
+            medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
+
+            rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
+            
+            desc += f"{medal} **{name}**\n"
+            desc += f"  {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
 
     if not desc:
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
