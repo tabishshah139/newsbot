@@ -228,6 +228,12 @@ def compute_level_from_total_xp(total_xp: int) -> int:
         level += 1
     return level
 
+def get_rank_name_from_daily(daily_xp: int):
+    for r, thresh in RANKS:
+        if daily_xp >= thresh:
+            return r
+    return None
+
 # ---------- Advanced Level Up Notification ----------
 async def send_level_up_notification(member: discord.Member, old_level: int, new_level: int):
     if new_level > old_level:
@@ -610,8 +616,8 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/recent", value="Show your recent channels", inline=False)
     embed.add_field(name="/purge", value="(Admin) Delete messages", inline=False)
     embed.add_field(name="/setcounter", value="(Admin) Create live counter channel", inline=False)
-    embed.add_field(name="/leaderboard", value="Show Top20 by 24h XP", inline=False)
-    embed.add_field(name="/rank", value="Show your rank, level & XP", inline=False)
+    embed.add_field(name="/leaderboard", value="Show Top (image) leaderboard", inline=False)
+    embed.add_field(name="/rank", value="Show your rank (image card)", inline=False)
     embed.add_field(name="/addrank", value="(Admin) Force rank to user", inline=False)
     embed.add_field(name="/removefromleaderboard", value="(Admin) Remove user from leaderboard", inline=False)
     embed.add_field(name="/resetleaderboard", value="(Admin) Reset entire leaderboard", inline=False)
@@ -776,119 +782,129 @@ async def on_message(message: discord.Message):
 
 # ---------- IMAGE CARD GENERATORS (Rank & Leaderboard) ----------
 # Uses fonts from fonts/ directory: Montserrat-Bold.ttf, Montserrat-Regular.ttf, Montserrat-Light.ttf
+
 def _load_font_safe(path: str, size: int):
     try:
         return ImageFont.truetype(path, size)
     except Exception:
-        # fallback to default PIL font if custom not found
         return ImageFont.load_default()
 
-async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_xp: int, rank_position: int):
-    # Compute levels and progress
-    lvl = compute_level_from_total_xp(total_xp)
-    current_level_total = total_xp_to_reach_level(lvl)
-    next_level_total = total_xp_to_reach_level(lvl + 1)
-    xp_in_level = total_xp - current_level_total
-    xp_needed = max(1, next_level_total - current_level_total)
-    progress_ratio = min(1.0, xp_in_level / xp_needed) if xp_needed > 0 else 1.0
-
-    # Canvas
-    W, H = 900, 300
-    base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(base)
-
-    # Gradient background (soft)
-    grad_colors = [(18, 24, 47), (36, 59, 85), (88, 56, 158)]
-    for i in range(W):
-        # linear interpolation across three colors
-        t = i / W
-        if t < 0.5:
-            a = t * 2
-            c1 = grad_colors[0]
-            c2 = grad_colors[1]
-            color = (
-                int(c1[0] + (c2[0] - c1[0]) * a),
-                int(c1[1] + (c2[1] - c1[1]) * a),
-                int(c1[2] + (c2[2] - c1[2]) * a),
-            )
-        else:
-            a = (t - 0.5) * 2
-            c1 = grad_colors[1]
-            c2 = grad_colors[2]
-            color = (
-                int(c1[0] + (c2[0] - c1[0]) * a),
-                int(c1[1] + (c2[1] - c1[1]) * a),
-                int(c1[2] + (c2[2] - c1[2]) * a),
-            )
-        draw.line([(i, 0), (i, H)], fill=color)
-
-    # Glass overlay
-    glass = Image.new("RGBA", (W, H), (255, 255, 255, 40))
-    glass = glass.filter(ImageFilter.GaussianBlur(14))
-    base = Image.alpha_composite(base, glass)
-
-    # Decorative translucent rounded panel
-    panel = Image.new("RGBA", (W - 40, H - 40), (255, 255, 255, 28))
-    panel = panel.filter(ImageFilter.GaussianBlur(2))
-    base.paste(panel, (20, 20), panel)
-
-    # Fetch avatar
-    avatar_bytes = None
+async def _fetch_avatar_bytes(url: str):
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(member.display_avatar.url) as resp:
-                avatar_bytes = await resp.read()
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    return await resp.read()
     except Exception:
-        avatar_bytes = None
+        return None
+    return None
 
+async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_xp: int, rank_position: int):
+    # compute levels & progress
+    lvl = compute_level_from_total_xp(total_xp)
+    current_total = total_xp_to_reach_level(lvl)
+    next_total = total_xp_to_reach_level(lvl + 1)
+    xp_in_level = total_xp - current_total
+    xp_needed = max(1, next_total - current_total)
+    progress_ratio = min(1.0, xp_in_level / xp_needed) if xp_needed > 0 else 1.0
+
+    # canvas size
+    W, H = 1100, 360
+
+    # load background image (assets/bg.png)
+    bg_path = "assets/bg.png"
+    try:
+        bg = Image.open(bg_path).convert("RGBA").resize((W, H))
+    except Exception:
+        # fallback to gradient bg
+        bg = Image.new("RGBA", (W, H), (24, 26, 40, 255))
+        draw_temp = ImageDraw.Draw(bg)
+        for i in range(W):
+            t = i / W
+            r = int(24 + (60 - 24) * t)
+            g = int(26 + (90 - 26) * t)
+            b = int(40 + (150 - 40) * t)
+            draw_temp.line([(i, 0), (i, H)], fill=(r, g, b))
+
+    base = Image.new("RGBA", (W, H))
+    base.paste(bg, (0, 0))
+
+    # glass overlay + blur
+    glass = Image.new("RGBA", (W, H), (255, 255, 255, 40))
+    glass = glass.filter(ImageFilter.GaussianBlur(10))
+    base = Image.alpha_composite(base, glass)
+
+    draw = ImageDraw.Draw(base)
+
+    # rounded translucent panel
+    panel = Image.new("RGBA", (W - 80, H - 80), (255, 255, 255, 28))
+    panel = panel.filter(ImageFilter.GaussianBlur(2))
+    base.paste(panel, (40, 40), panel)
+
+    # avatar (fetch)
+    avatar_bytes = await _fetch_avatar_bytes(member.display_avatar.url) if member else None
+    av_size = 200
     if avatar_bytes:
-        avatar = Image.open(BytesIO(avatar_bytes)).convert("RGBA").resize((180, 180))
-        mask = Image.new("L", (180, 180), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, 180, 180), fill=255)
-        base.paste(avatar, (40, 60), mask)
-        # subtle avatar border
-        draw.ellipse((36, 56, 224, 244), outline=(255, 255, 255, 50), width=3)
+        try:
+            avatar = Image.open(BytesIO(avatar_bytes)).convert("RGBA").resize((av_size, av_size))
+            mask = Image.new("L", (av_size, av_size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, av_size, av_size), fill=255)
+            base.paste(avatar, (60, 80), mask)
+            # subtle border
+            draw.ellipse((56, 76, 60 + av_size, 80 + av_size), outline=(255,255,255,60), width=3)
+        except Exception:
+            avatar_bytes = None
 
-    # Fonts
+    if not avatar_bytes:
+        # draw placeholder circle
+        draw.ellipse((60, 80, 60 + av_size, 80 + av_size), fill=(110, 110, 120, 255))
+        draw.text((60 + 40, 80 + av_size//2 - 10), "No\nAvatar", fill=(230,230,230), anchor="mm")
+
+    # fonts
     font_bold = _load_font_safe("fonts/Montserrat-Bold.ttf", 36)
     font_reg = _load_font_safe("fonts/Montserrat-Regular.ttf", 22)
     font_light = _load_font_safe("fonts/Montserrat-Light.ttf", 18)
 
-    # Text: username
-    name_text = member.display_name
-    draw.text((250, 60), name_text, font=font_bold, fill=(255, 255, 255, 255))
+    # user texts
+    name_x = 60 + av_size + 40
+    draw.text((name_x, 95), member.display_name, font=font_bold, fill=(255,255,255,255))
+    rank_name = await get_manual_rank(member.guild.id, member.id)
+    if not rank_name:
+        rank_name = get_rank_name_from_daily(daily_xp) or "No Rank"
 
-    # Text: Level, Rank (position), Daily XP
-    draw.text((250, 110), f"Level {lvl}  •  Rank #{rank_position}", font=font_reg, fill=(230, 230, 230, 230))
-    draw.text((250, 142), f"Total XP: {total_xp}  •  24h XP: {daily_xp}", font=font_light, fill=(200, 200, 200, 200))
+    draw.text((name_x, 140), f"Level {lvl}  •  Rank {rank_name}", font=font_reg, fill=(230,230,230,230))
+    draw.text((name_x, 170), f"Total XP: {total_xp}  •  24h XP: {daily_xp}", font=font_light, fill=(200,200,200,200))
 
-    # Progress bar background
-    pb_x1, pb_y1 = 250, 200
-    pb_x2, pb_y2 = 800, 232
-    radius = 12
-    # bar background
-    draw.rounded_rectangle([pb_x1, pb_y1, pb_x2, pb_y2], radius=radius, fill=(255, 255, 255, 50))
-    # filled part
-    fill_w = int((pb_x2 - pb_x1) * progress_ratio)
+    # progress bar
+    pb_x1, pb_y1 = name_x, 240
+    pb_w, pb_h = 760 - (name_x - 60), 28
+    pb_x2 = pb_x1 + pb_w
+    # background bar
+    draw.rounded_rectangle([pb_x1, pb_y1, pb_x2, pb_y1 + pb_h], radius=14, fill=(255,255,255,60))
+    # filled gradient
+    fill_w = int(pb_w * progress_ratio)
     if fill_w > 0:
-        # gradient for fill
         for i in range(fill_w):
             t = i / max(1, fill_w)
-            r = int(102 + (46 - 102) * t)   # subtle color mix
-            g = int(255 + (204 - 255) * t)
-            b = int(255 + (113 - 255) * t)
-            draw.line([(pb_x1 + i, pb_y1), (pb_x1 + i, pb_y2)], fill=(r, g, b, 255))
-        draw.rounded_rectangle([pb_x1, pb_y1, pb_x1 + fill_w, pb_y2], radius=radius, fill=None, outline=None)
+            # left green -> right cyan-ish
+            r = int(80 + (46 - 80) * t)
+            g = int(220 + (204 - 220) * t)
+            b = int(140 + (113 - 140) * t)
+            draw.line([(pb_x1 + i, pb_y1), (pb_x1 + i, pb_y1 + pb_h)], fill=(r, g, b))
+    # progress text
+    prog_text = f"{xp_in_level}/{xp_needed} XP  ({int(progress_ratio*100)}%)" if 'xp_in_level' in locals() else f"{xp_in_level}/{xp_needed} XP  ({int(progress_ratio*100)}%)"
+    # compute xp_in_level variable properly:
+    try:
+        xp_in_level = xp_in_level
+    except Exception:
+        xp_in_level = total_xp - current_total
+    w, h = draw.textsize(prog_text, font=font_light)
+    draw.text((pb_x2 - w - 12, pb_y1 + (pb_h - h)//2), prog_text, font=font_light, fill=(20,20,20,230))
 
-    # Progress text over bar
-    progress_text = f"{xp_in_level}/{xp_needed} XP ({int(progress_ratio*100)}%)"
-    w, h = draw.textsize(progress_text, font=font_light)
-    draw.text((pb_x1 + (pb_x2 - pb_x1) - w - 12, pb_y1 + ((pb_y2 - pb_y1) - h) // 2), progress_text, font=font_light, fill=(20, 20, 20, 220))
-
-    # Footer small hint
-    foot = "Keep chatting to climb the ranks ✨"
-    fw, fh = draw.textsize(foot, font=font_light)
-    draw.text((W - fw - 20, H - fh - 12), foot, font=font_light, fill=(240, 240, 240, 140))
+    # footer hint
+    footer = f"#{rank_position}  •  Keep chatting to climb higher ✨"
+    fw, fh = draw.textsize(footer, font=font_light)
+    draw.text((W - fw - 40, H - fh - 24), footer, font=font_light, fill=(240,240,240,170))
 
     buffer = BytesIO()
     base.convert("RGBA").save(buffer, "PNG")
@@ -896,54 +912,99 @@ async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_
     return buffer
 
 async def generate_leaderboard_card_image(guild: discord.Guild, entries: list):
-    # entries: list of dicts {member, total_xp, daily_xp, level, xp_in_level, required_for_level}
+    # entries: list of dicts {member, total_xp, daily_xp, level}
     count = max(1, len(entries))
-    W = 1000
-    H = 140 + count * 70
-    base = Image.new("RGBA", (W, H), (20, 25, 40, 255))
+    W = 1100
+    entry_h = 86
+    H = 140 + count * entry_h
+
+    # load background
+    bg_path = "assets/bg.png"
+    try:
+        bg = Image.open(bg_path).convert("RGBA").resize((W, H))
+    except Exception:
+        bg = Image.new("RGBA", (W, H), (18, 24, 40, 255))
+        draw_tmp = ImageDraw.Draw(bg)
+        for i in range(W):
+            t = i / W
+            r = int(18 + (60 - 18) * t)
+            g = int(24 + (80 - 24) * t)
+            b = int(40 + (140 - 40) * t)
+            draw_tmp.line([(i, 0), (i, 120)], fill=(r,g,b))
+
+    base = Image.new("RGBA", (W, H))
+    base.paste(bg, (0,0))
+
+    # overlay
+    overlay = Image.new("RGBA", (W, H), (255,255,255,20))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(6))
+    base = Image.alpha_composite(base, overlay)
     draw = ImageDraw.Draw(base)
 
-    # Title bar gradient
-    title_h = 86
-    for i in range(W):
-        t = i / W
-        c1 = (64, 43, 122)
-        c2 = (24, 33, 71)
-        color = (
-            int(c1[0] + (c2[0] - c1[0]) * t),
-            int(c1[1] + (c2[1] - c1[1]) * t),
-            int(c1[2] + (c2[2] - c1[2]) * t),
-        )
-        draw.line([(i, 0), (i, title_h)], fill=color)
     title_font = _load_font_safe("fonts/Montserrat-Bold.ttf", 36)
     sub_font = _load_font_safe("fonts/Montserrat-Regular.ttf", 22)
-    draw.text((28, 20), f"🏆 {guild.name} — Top {len(entries)} Leaderboard", font=title_font, fill=(255, 255, 255, 255))
+    small_font = _load_font_safe("fonts/Montserrat-Light.ttf", 18)
 
-    # List entries
-    y = title_h + 18
-    medal = ["🥇", "🥈", "🥉"]
+    # Title
+    draw.text((28, 20), f"🏆 {guild.name} — Top {len(entries)} Leaderboard", font=title_font, fill=(255,255,255,255))
+
+    # Rows
+    y = 120
     for idx, ent in enumerate(entries, start=1):
         member = ent.get("member")
         lvl = ent.get("level")
-        daily = ent.get("daily_xp")
-        total = ent.get("total_xp")
+        daily = ent.get("daily_xp") or 0
+        total = ent.get("total_xp") or 0
 
-        # Left side: rank number & avatar circle
-        x_left = 32
-        # medal or number
-        medal_text = medal[idx-1] if idx-1 < 3 else f"#{idx}"
-        draw.text((x_left, y + 8), medal_text, font=_load_font_safe("fonts/Montserrat-Bold.ttf", 28), fill=(255,255,255,255))
+        # avatar
+        av_size = 64
+        av_x = 40
+        av_y = y
+        avatar_bytes = None
+        if member:
+            avatar_bytes = await _fetch_avatar_bytes(member.display_avatar.url)
+        if avatar_bytes:
+            try:
+                avatar = Image.open(BytesIO(avatar_bytes)).convert("RGBA").resize((av_size, av_size))
+                mask = Image.new("L", (av_size, av_size), 0)
+                ImageDraw.Draw(mask).ellipse((0,0,av_size,av_size), fill=255)
+                base.paste(avatar, (av_x, av_y), mask)
+            except Exception:
+                draw.ellipse((av_x, av_y, av_x+av_size, av_y+av_size), fill=(80,80,100,255))
+        else:
+            draw.ellipse((av_x, av_y, av_x+av_size, av_y+av_size), fill=(80,80,100,255))
 
-        # member name
-        name_x = x_left + 70
+        # medal/position
+        medal_x = av_x + av_size + 18
+        if idx == 1:
+            medal_text = "🥇"
+            color = (255, 215, 0)
+        elif idx == 2:
+            medal_text = "🥈"
+            color = (192, 192, 192)
+        elif idx == 3:
+            medal_text = "🥉"
+            color = (205, 127, 50)
+        else:
+            medal_text = f"#{idx}"
+            color = (230, 230, 230)
+
+        draw.text((medal_x, y+6), medal_text, font=_load_font_safe("fonts/Montserrat-Bold.ttf", 26), fill=color)
+
+        # name and info
+        name_x = medal_x + 70
         name_str = member.display_name if member else f"User {ent.get('user_id')}"
-        draw.text((name_x, y + 6), name_str, font=_load_font_safe("fonts/Montserrat-Bold.ttf", 24), fill=(255,255,255,255))
-        # level and daily xp
-        draw.text((name_x, y + 36), f"Lvl {lvl} • {daily} XP (24h) • Total {total} XP", font=sub_font, fill=(200,200,200,220))
+        draw.text((name_x, y+4), name_str, font=_load_font_safe("fonts/Montserrat-Bold.ttf", 22), fill=(255,255,255,255))
 
-        # small separator line
-        draw.line([(32, y + 66), (W - 32, y + 66)], fill=(255,255,255,10))
-        y += 70
+        rank_name = await get_manual_rank(guild.id, member.id) if member else None
+        if not rank_name:
+            rank_name = get_rank_name_from_daily(daily) or "No Rank"
+
+        draw.text((name_x, y+34), f"Lvl {lvl} • {daily} XP (24h) • {rank_name} • Total {total} XP", font=sub_font, fill=(200,200,200,220))
+
+        # separator
+        draw.line([(28, y+entry_h-6), (W-28, y+entry_h-6)], fill=(255,255,255,8))
+        y += entry_h
 
     buffer = BytesIO()
     base.convert("RGBA").save(buffer, "PNG")
@@ -951,11 +1012,13 @@ async def generate_leaderboard_card_image(guild: discord.Guild, entries: list):
     return buffer
 
 # ---------- Enhanced Rank Command (REPLACED with image only) ----------
-@tree.command(name="rank", description="Show your rank card")
+@tree.command(name="rank", description="Show your rank and level")
 async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    await interaction.response.defer()  # give bot time to build image
+
     member = member or interaction.user
     if interaction.guild is None:
-        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+        return await interaction.followup.send("Guild-only.", ephemeral=True)
 
     # fetch user data
     try:
@@ -968,9 +1031,9 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
                 total_xp = row['total_xp'] or 0
                 daily_xp = row['daily_xp'] or 0
 
-            # calculate rank position by total_xp (global in this guild)
+            # calculate rank position by total_xp (within guild)
             rows = await conn.fetch("SELECT user_id, total_xp FROM users WHERE guild_id=$1 ORDER BY total_xp DESC", interaction.guild.id)
-            rank_position = 1
+            rank_position = len(rows)
             for i, r in enumerate(rows):
                 if r['user_id'] == member.id:
                     rank_position = i + 1
@@ -983,15 +1046,15 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
 
     buffer = await generate_rank_card_image(member, total_xp, daily_xp, rank_position)
     file = discord.File(fp=buffer, filename="rank_card.png")
-    # send image only (no embed)
-    await interaction.response.send_message(file=file)
+    await interaction.followup.send(file=file)
 
 # ---------- Advanced Leaderboard Command (REPLACED with Top 10 image only) ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 10 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()
     guild = interaction.guild
     if not guild:
-        return await interaction.response.send_message("Guild-only.", ephemeral=True)
+        return await interaction.followup.send("Guild-only.", ephemeral=True)
 
     now_ts = time.time()
     cache = leaderboard_cache.get(guild.id)
@@ -1000,7 +1063,7 @@ async def leaderboard(interaction: discord.Interaction):
         buf = cache[1]
         buf.seek(0)
         file = discord.File(fp=buf, filename="leaderboard.png")
-        return await interaction.response.send_message(file=file)
+        return await interaction.followup.send(file=file)
 
     try:
         async with db_pool.acquire() as conn:
@@ -1013,7 +1076,7 @@ async def leaderboard(interaction: discord.Interaction):
             """, guild.id)
     except Exception as e:
         print("⚠️ Error fetching leaderboard:", e)
-        return await interaction.response.send_message("❌ Failed to fetch leaderboard.", ephemeral=True)
+        return await interaction.followup.send("❌ Failed to fetch leaderboard.", ephemeral=True)
 
     entries = []
     for r in rows:
@@ -1031,12 +1094,12 @@ async def leaderboard(interaction: discord.Interaction):
         })
 
     buffer = await generate_leaderboard_card_image(guild, entries)
-    # cache the buffer (store BytesIO copy)
+    # cache a copy
     cache_buf = BytesIO(buffer.getvalue())
     leaderboard_cache[guild.id] = (now_ts, cache_buf)
 
     file = discord.File(fp=buffer, filename="leaderboard.png")
-    await interaction.response.send_message(file=file)
+    await interaction.followup.send(file=file)
 
 # ---------- Admin Rank Commands ----------
 @tree.command(name="addrank", description="Admin: force a rank to a user")
