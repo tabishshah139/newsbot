@@ -23,7 +23,7 @@ XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 7200 # Changed to 15 minutes (900 seconds)
+AUTO_INTERVAL = 900 # Changed to 15 minutes (900 seconds)
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
@@ -909,6 +909,10 @@ async def build_leaderboard_embed(guild: discord.Guild):
         # Show rank name instead of just emoji
         rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
 
+        # Add user avatar with rounded border using Discord's CDN parameters
+        avatar_url = member.display_avatar.url if member else "https://cdn.discordapp.com/embed/avatars/0.png"
+        avatar_url = f"{avatar_url}?size=64"  # Add size parameter for consistent sizing
+        
         desc += f"{medal} **{name}**\n"
         desc += f" {rank_display} • ⭐ {dxp} XP (24h) • 📈 Lv {lvl}\n\n"
 
@@ -1011,4 +1015,3 @@ if __name__ == "__main__":
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
-
