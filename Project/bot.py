@@ -23,12 +23,13 @@ XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 900 # Changed to 15 minutes (900 seconds)
+AUTO_INTERVAL = 1800 # Changed to 30 minutes (1800 seconds)
 BYPASS_ROLE = "Basic"
-STATUS_SWITCH_SECONDS = 10
-COUNTER_UPDATE_SECONDS = 5
+STATUS_SWITCH_SECONDS = 30 # Increased from 10 to 30 seconds
+COUNTER_UPDATE_SECONDS = 30 # Increased from 5 to 30 seconds
 NOTIFICATION_CHANNEL_ID = 1412316924536422405
 REPORT_CHANNEL_ID = 1412325934291484692 # Hardcoded report channel
+CACHE_DURATION = 300 # 5 minutes cache for leaderboard
 
 # Rank thresholds (EASY PROGRESSION)
 RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
@@ -459,7 +460,7 @@ async def status_loop():
             
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(30)  # Longer sleep on error
 
 async def counter_updater():
     await client.wait_until_ready()
@@ -480,7 +481,7 @@ async def counter_updater():
                                 pass
         except Exception as e:
             print(f"⚠️ counter_updater error: {e}")
-            await asyncio.sleep(COUNTER_UPDATE_SECONDS)
+        await asyncio.sleep(COUNTER_UPDATE_SECONDS)
 
 async def auto_message_task():
     await client.wait_until_ready()
@@ -501,9 +502,9 @@ async def auto_message_task():
     
     while not client.is_closed():
         try:
-            # Reload messages every 6 hours (21600 seconds)
+            # Reload messages every 12 hours (43200 seconds)
             current_time = time.time()
-            if AUTO_FILE_URL and (current_time - last_reload_time) >= 21600:
+            if AUTO_FILE_URL and (current_time - last_reload_time) >= 43200:
                 print("🔄 Reloading messages from URL...")
                 await load_auto_messages_from_url()
                 last_reload_time = current_time
@@ -551,7 +552,13 @@ async def reset_daily_ranks_async():
 def schedule_daily_reset():
     tz = pytz.timezone("Asia/Karachi")
     scheduler = AsyncIOScheduler(timezone=tz)
-    scheduler.add_job(lambda: asyncio.create_task(reset_daily_ranks_async()), "cron", hour=0, minute=0)
+    scheduler.add_job(
+        lambda: asyncio.create_task(reset_daily_ranks_async()), 
+        "cron", 
+        hour=0, 
+        minute=0,
+        misfire_grace_time=3600  # Allow 1 hour grace period
+    )
     scheduler.start()
     print("✅ Scheduled daily reset (00:00 Asia/Karachi)")
 
@@ -610,7 +617,7 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
+    embed = discord.Embed(title="📌 Your Recent Channels", description="✧".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
@@ -700,6 +707,41 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
 
+    # Pehle XP check karein (lighter operation)
+    if XP_CHANNEL_ID and message.channel.id == XP_CHANNEL_ID:
+        try:
+            old_data = await get_user_row(message.guild.id, message.author.id)
+            old_level = compute_level_from_total_xp(old_data['total_xp'])
+            old_rank = None
+            for r, thresh in RANKS:
+                if old_data['daily_xp'] >= thresh:
+                    old_rank = r
+                    break
+
+            xp = xp_for_message(message.content)
+            await add_message(message.guild.id, message.author.id, xp, message.channel.id)
+
+            new_data = await get_user_row(message.guild.id, message.author.id)
+            new_level = compute_level_from_total_xp(new_data['total_xp'])
+
+            new_rank = None
+            for r, thresh in RANKS:
+                if new_data['daily_xp'] >= thresh:
+                    new_rank = r
+                    break
+
+            current_rank = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
+
+            if new_level > old_level:
+                await send_level_up_notification(message.author, old_level, new_level)
+
+            if new_rank != old_rank:
+                await send_rank_up_notification(message.author, old_rank, new_rank)
+
+        except Exception as e:
+            print("⚠️ XP add error:", e)
+    
+    # Phir moderation check karein (heavier operation)
     is_admin = message.author.guild_permissions.administrator
     has_bypass = any(role.name == BYPASS_ROLE for role in message.author.roles) if hasattr(message.author, 'roles') else False
 
@@ -744,41 +786,6 @@ async def on_message(message: discord.Message):
                 except Exception:
                     pass
             return
-
-    if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
-        return
-
-    try:
-        old_data = await get_user_row(message.guild.id, message.author.id)
-        old_level = compute_level_from_total_xp(old_data['total_xp'])
-        old_rank = None
-        for r, thresh in RANKS:
-            if old_data['daily_xp'] >= thresh:
-                old_rank = r
-                break
-
-        xp = xp_for_message(message.content)
-        await add_message(message.guild.id, message.author.id, xp, message.channel.id)
-
-        new_data = await get_user_row(message.guild.id, message.author.id)
-        new_level = compute_level_from_total_xp(new_data['total_xp'])
-
-        new_rank = None
-        for r, thresh in RANKS:
-            if new_data['daily_xp'] >= thresh:
-                new_rank = r
-                break
-
-        current_rank = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
-
-        if new_level > old_level:
-            await send_level_up_notification(message.author, old_level, new_level)
-
-        if new_rank != old_rank:
-            await send_rank_up_notification(message.author, old_rank, new_rank)
-
-    except Exception as e:
-        print("⚠️ XP add error:", e)
 
     if message.content.strip().lower().startswith("!ping"):
         try:
@@ -877,7 +884,7 @@ async def leaderboard(interaction: discord.Interaction):
 
     now_ts = time.time()
     cache = leaderboard_cache.get(guild.id)
-    if cache and now_ts - cache[0] < 60:
+    if cache and now_ts - cache[0] < CACHE_DURATION:
         return await interaction.response.send_message(embed=cache[1])
 
     embed = await build_leaderboard_embed(guild)
