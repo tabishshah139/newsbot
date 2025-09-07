@@ -182,7 +182,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
         for cid in recent_channels[user_id][guild.id][:10]:
             ch = guild.get_channel(cid)
             if ch and current.lower() in ch.name.lower():
-                choices.append(app_commands.Choice(name=f"⭐ {ch.name", value=str(ch.id)))
+                choices.append(app_commands.Choice(name=f"⭐ {ch.name}", value=str(ch.id)))
     for ch in guild.text_channels:
         if current.lower() in ch.name.lower():
             choices.append(app_commands.Choice(name=ch.name, value=str(ch.id)))
