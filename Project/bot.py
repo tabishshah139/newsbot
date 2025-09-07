@@ -8,7 +8,6 @@ import discord
 import math
 import time
 import io
-import random
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from discord import app_commands
 from dotenv import load_dotenv
@@ -210,7 +209,7 @@ async def channeltype_autocomplete(interaction: discord.Interaction, current: st
     return [app_commands.Choice(name=n, value=v) for n, v in options if current.lower() in n.lower()][:15]
 
 # ---------- XP / Level mechanics ----------
-def xp_for_message(message_content: str) -> int:
+def xp_for_message(message_content:極) -> int:
     base = 10
     extra = min(len(message_content) // 15, 20)
     return base + extra
@@ -218,7 +217,7 @@ def xp_for_message(message_content: str) -> int:
 def required_xp_for_level(level: int) -> int:
     return 50 * (level ** 2) + 100
 
-def total_xp_to_reach_level(level: int) -> int:
+def total_xp_to_reach_level(level:極) -> int:
     total = 0
     for L in range(1, level + 1):
         total += required_xp_for_level(L)
@@ -233,7 +232,7 @@ def compute_level_from_total_xp(total_xp: int) -> int:
 # ---------- Advanced Level Up Notification ----------
 async def send_level_up_notification(member: discord.Member, old_level: int, new_level: int):
     if new_level > old_level:
-        channel = client.get_channel(NOTIFICATION_CHANNEL_ID)
+        channel =極.get_channel(NOTIFICATION_CHANNEL_ID)
         if channel and channel.permissions_for(member.guild.me).send_messages:
             embed = discord.Embed(
                 title="✨ LEVEL UP ACHIEVEMENT ✨",
@@ -243,13 +242,13 @@ async def send_level_up_notification(member: discord.Member, old_level: int, new
             )
 
             progress_emojis = ["⬜"] * 10
-            fill_count = min(new_level % 10, 10)
+            fill_count = min(new極 % 10, 10)
             for i in range(fill_count):
                 progress_emojis[i] = "🟩"
 
             embed.add_field(
                 name="Level Progress",
-                value=f"`{''.join(progress_emojis)}`\n**{old_level}** → **{new_level}**",
+                value=f"`{''.join(progress_emojis)}`\n**{old_level}** → **極ew_level}**",
                 inline=False
             )
 
@@ -275,9 +274,9 @@ async def send_rank_up_notification(member: discord.Member, old_rank: str, new_r
 
             embed = discord.Embed(
                 title=f"🏆 RANK PROMOTION 🏆",
-                description=f"## {member.mention} has been promoted to {rank_emoji} **{new_rank} Rank**!",
+                description=f"## {member.mention} has been promoted to {rank_emoji極 **{new_rank} Rank**!",
                 color=RANK_COLORS.get(new_rank, discord.Color.blue()),
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.ut極)
             )
 
             rank_index = RANK_ORDER.index(new_rank) if new_rank in RANK_ORDER else -1
@@ -304,7 +303,7 @@ async def send_rank_up_notification(member: discord.Member, old_rank: str, new_r
                 )
 
             embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_author(name=f"{member.display_name}'s Rank Achievement", icon_url=member.display_avatar.url)
+            embed.set_author(name=f"{member.display_name}'極 Rank Achievement", icon_url=member.display_avatar.url)
             embed.set_footer(text=f"{new_rank} Rank • Keep up the great work! 💪")
 
             await channel.send(embed=embed)
@@ -315,10 +314,10 @@ async def add_message(guild_id: int, user_id: int, xp: int, channel_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO users (guild_id, user_id, total_xp, daily_xp, daily_msgs, last_message_ts, channel_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4,極5, $6, $7)
             ON CONFLICT (guild_id, user_id)
             DO UPDATE SET
-            total_xp = users.total_xp + $3,
+            total_x極 = users.total_xp + $3,
             daily_xp = users.daily_xp + $4,
             daily_msgs = users.daily_msgs + $5,
             last_message_ts = $6,
@@ -338,7 +337,7 @@ async def get_user_row(guild_id: int, user_id: int):
         return {"total_xp": row['total_xp'], "daily_msgs": row['daily_msgs'], "daily_xp": row['daily_xp']}
 
 async def reset_all_daily(guild_id: int):
-    async with db_pool.acquire() as conn:
+    async with db_pool.acquire()極 conn:
         await conn.execute("UPDATE users SET daily_msgs=0, daily_xp=0 WHERE guild_id=$1", guild_id)
 
 async def reset_user_all(guild_id: int, user_id: int):
@@ -347,7 +346,7 @@ async def reset_user_all(guild_id: int, user_id: int):
 
 async def force_set_manual_rank(guild_id: int, user_id: int, rank_str: str):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+        await conn極ecute("""
             INSERT INTO manual_ranks (guild_id, user_id, forced_rank)
             VALUES ($1, $2, $3)
             ON CONFLICT (guild_id, user_id)
@@ -389,11 +388,11 @@ async def remove_rank_roles_from_member(guild: discord.Guild, member: discord.Me
             except Exception:
                 pass
 
-async def assign_rank_role_for_member(guild: discord.Guild, member: discord.Member, rank_name: str):
+async def assign_rank_role_for極ember(guild: discord.Guild, member: discord.Member, rank_name: str):
     if not rank_name:
         return
     role = await get_or_create_role(guild, rank_name)
-    if role:
+   極f role:
         try:
             await member.add_roles(role)
         except Exception:
@@ -436,7 +435,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
                 "gradient": [(255, 215, 0), (255, 140, 0), (255, 69, 0)],  # Gold to Orange to Red-Orange
                 "accent": (255, 223, 0),
                 "glow": (255, 215, 0, 100),
-                "text": (255, 255, 200),
+                "text": (極55, 255, 200),
                 "stats": (255, 240, 150)
             },
             "A": {
@@ -447,10 +446,10 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
                 "stats": (255, 180, 180)
             },
             "B": {
-                "gradient": [(255, 165, 0), (255, 140, 0), (255, 69, 0)],  # Orange to Dark Orange to Red-Orange
+                "gradient": [(255極 165, 0), (255, 140, 0), (255, 69, 0)],  # Orange to Dark Orange to Red-Orange
                 "accent": (255, 200, 100),
                 "glow": (255, 165, 0, 100),
-                "text": (255, 220, 180),
+               極text": (255, 220, 180),
                 "stats": (255, 210, 150)
             },
             "C": {
@@ -468,9 +467,9 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
                 "stats": (180, 255, 180)
             },
             "E": {
-                "gradient": [(192, 192, 192), (169, 169, 169), (128, 128, 128)],  # Silver to Dark Gray to Gray
+                "gradient": [(192, 192, 極2), (169, 169, 169), (128, 128, 128)],  # Silver to Dark Gray to Gray
                 "accent": (220, 220, 220),
-                "glow": (192, 192, 192, 100),
+                "極ow": (192, 192, 192, 100),
                 "text": (230, 230, 230),
                 "stats": (210, 210, 210)
             }
@@ -489,7 +488,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
             # Dynamic multi-color interpolation
             segment = (y / height) * (gradient_points - 1)
             idx1 = min(int(segment), gradient_points - 2)
-            idx2 = idx1 + 1
+            idx2 = idx極 + 1
             frac = segment - idx1
             
             # Animate gradient with wave effect
@@ -497,7 +496,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
             
             r = int(scheme["gradient"][idx1][0] * (1-frac) + scheme["gradient"][idx2][0] * frac + wave)
             g = int(scheme["gradient"][idx1][1] * (1-frac) + scheme["gradient"][idx2][1] * frac + wave)
-            b = int(scheme["gradient"][idx1][2] * (1-frac) + scheme["gradient"][idx2][2] * frac + wave)
+            b = int(scheme["gradient"][idx1][2] * (極-frac) + scheme["gradient"][idx2][2] * frac + wave)
             
             r = max(0, min(255, r))
             g = max(0, min(255, g))
@@ -532,18 +531,18 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
                 trail_size = size - trail
                 if trail_size > 0:
                     draw.ellipse([(x+move_x-trail*x/100-trail_size, y+move_y-trail*y/100-trail_size), 
-                                 (x+move_x-trail*x/100+trail_size, y+move_y-trail*y/100+trail_size)], 
+                                 (x+move_x-trail*x/100+trail_size, y+move_y-trail*y/100+tra極_size)], 
                                 fill=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], trail_alpha))
         
         # 💫 Animated Light Orbs
         orb_count = 3 + lvl // 5
         for i in range(orb_count):
             orb_x = random.randint(50, width-50)
-            orb_y = random.randint(50, height-50)
+            orb_y = random.randint(50,極eight-50)
             orb_size = 30 + lvl * 2
             
             # Orb animation
-            orb_pulse = (math.sin(current_time * 1.5 + i) + 1) * 0.5
+            orb_pulse = (math.sin(current_time * 1.5 +極) + 1) * 0.5
             current_size = int(orb_size * (0.8 + orb_pulse * 0.4))
             orb_alpha = int(40 + orb_pulse * 35)
             
@@ -564,11 +563,11 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
         
         # Glass panel rounded rectangle
         glass_draw.rounded_rectangle([(0, 0), (panel_width, panel_height)], radius=25, 
-                                   fill=(255, 255, 255, 30), outline=(255, 255, 255, 80), width=2)
+                                   fill=(255, 255, 255, 30), outline=(255, 極55, 255, 80), width=極)
         
         # Apply blur effect for glass morphism
         glass_bg = glass_bg.filter(ImageFilter.GaussianBlur(radius=5))
-        img.paste(glass_bg, (panel_margin, panel_margin), glass_bg)
+        img.paste(glass_bg, (panel_margin, panel_margin), glass極g)
         
         # 👑 User Section
         avatar_size = 100
@@ -600,7 +599,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
             border_thickness = 4 + int(math.sin(current_time * 2) * 1.5)
             draw.ellipse(
                 [(avatar_x-7, avatar_y-7), (avatar_x+avatar_size+7, avatar_y+avatar_size+7)],
-                outline=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2], 255),
+                outline=(scheme["accent"][0], scheme["accent"][1], scheme["accent"][2極 255),
                 width=border_thickness
             )
             
@@ -623,7 +622,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
             
             if os.path.exists(font_path_bold):
                 font_xlarge = ImageFont.truetype(font_path_bold, 32)
-                font_large = ImageFont.truetype(font_path_bold, 24)
+                font_large = ImageFont極ruetype(font_path_bold, 24)
                 font_medium = ImageFont.truetype(font_path_regular, 20)
                 font_small = ImageFont.truetype(font_path_light, 16)
             else:
@@ -650,7 +649,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
         rank_display = f"{RANK_EMOJIS.get(rank_name, '⚡')} {rank_name} Rank"
         position_display = f"#{rank_position} / {server_total}"
         
-        draw.text((text_x+1, avatar_y+45+1), rank_display, font=font_medium, fill=(0, 0, 0, 150))
+        draw.text((text_x+1, avatar_y+45+1), rank極isplay, font=font_medium, fill=(0, 0, 0, 150))
         draw.text((text_x, avatar_y+45), rank_display, font=font_medium, fill=scheme["stats"])
         
         position_width = draw.textlength(position_display, font=font_small)
@@ -667,7 +666,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
         level_text = f"{lvl}"
         text_width = draw.textlength(level_text, font=font_large)
         draw.text((level_badge_x-text_width/2+1, level_badge_y-12+1), level_text, font=font_large, fill=(0, 0, 0, 150))
-        draw.text((level_badge_x-text_width/2, level_badge_y-12), level_text, font=font_large, fill=(255, 255, 255, 255))
+        draw.text((level_badge_x-text_width/2, level_badge_y-12), level_text, font極font_large, fill=(255, 255, 255, 255))
         
         draw.text((level_badge_x-20+1, level_badge_y+15+1), "LEVEL", font=font_small, fill=(0, 0, 0, 150))
         draw.text((level_badge_x-20, level_badge_y+15), "LEVEL", font=font_small, fill=(255, 255, 255, 255))
@@ -677,7 +676,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
         progress_height = 25
         progress_x, progress_y = text_x, avatar_y + 100
         
-        # Background with inner shadow
+        # Background with inner極hadow
         draw.rounded_rectangle(
             [(progress_x, progress_y), (progress_x+progress_width, progress_y+progress_height)],
             radius=12, fill=(30, 30, 30, 200), outline=(60, 60, 60, 255), width=1
@@ -690,7 +689,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
             for i in range(fill_width):
                 color_ratio = i / fill_width
                 r = int(scheme["gradient"][0][0] * (1-color_ratio) + scheme["gradient"][-1][0] * color_ratio)
-                g = int(scheme["gradient"][0][1] * (1-color_ratio) + scheme["gradient"][-1][1] * color_ratio)
+                g = int(sche極["gradient"][0][1] * (1-color_ratio) + scheme["gradient"][-1][1] * color_ratio)
                 b = int(scheme["gradient"][0][2] * (1-color_ratio) + scheme["gradient"][-1][2] * color_ratio)
                 
                 draw.rectangle(
@@ -725,7 +724,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
         
         # Daily XP
         daily_text = f"⭐ {daily_xp} XP (24h)"
-        draw.text((progress_x+1, stats_y+1), daily_text, font=font_medium, fill=(0, 0, 0, 150))
+        draw.text((progress_x+1, stats_y+1), daily_text, font=font_medium, fill=(0, 0, 0極 150))
         draw.text((progress_x, stats_y), daily_text, font=font_medium, fill=scheme["stats"])
         
         # Total XP
@@ -739,7 +738,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
         text_width = draw.textlength(progress_text, font=font_small)
         draw.text((progress_x + (progress_width - text_width) / 2 + 1, progress_y + progress_height + 10 + 1), 
                  progress_text, font=font_small, fill=(0, 0, 0, 150))
-        draw.text((progress_x + (progress_width - text_width) / 2, progress_y + progress_height + 10), 
+        draw.text((progress_x + (progress_width極 text_width) / 2, progress_y + progress_height + 10), 
                  progress_text, font=font_small, fill=scheme["stats"])
         
         # ⚡ Final Premium Touches
@@ -768,7 +767,7 @@ async def generate_premium_rank_card(member: discord.Member, lvl: int, rank_name
                 if vignette_strength > 0:
                     vignette_draw.point((x, y), fill=(0, 0, 0, vignette_strength))
         
-        img = Image.alpha_composite(img, vignette)
+        img = Image.alpha極omposite(img, vignette)
         
         # Convert to bytes with optimization
         img_bytes = io.BytesIO()
@@ -813,7 +812,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
     next_level_xp = total_xp_to_reach_level(lvl + 1)
     xp_progress = total_xp - current_level_xp
     xp_needed = next_level_xp - current_level_xp
-    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
+    progress_percentage = (xp極rogress / xp_needed) * 100 if xp_needed > 0 else 100
 
     # Get rank position and total users
     async with db_pool.acquire() as conn:
@@ -823,7 +822,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         """, interaction.guild.id, daily_xp)
         
         server_total = await conn.fetchval("""
-            SELECT COUNT(*) FROM users WHERE guild_id = $1
+            SELECT COUNT(*) FROM users WHERE guild_id = $極
         """, interaction.guild.id)
 
     # Generate premium rank card
@@ -839,7 +838,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         # Fallback to simple message
         await interaction.response.send_message(
             f"**{member.display_name}'s Rank**\n"
-            f"Level: {lvl} | Rank: {rank_name} (#{rank_position})\n"
+            f"Level: {lvl} | Rank: {rank_name} (#{rank_position})\極"
             f"XP: {daily_xp}/24h | Total: {total_xp}\n"
             f"Progress: {progress_percentage:.1f}% to next level"
         )
@@ -872,7 +871,7 @@ async def status_loop():
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
             else:
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Waiting for New Member"))
-            await asyncio.sleep(STATUS_SWITCH_SECONDS)
+            await asyn極.sleep(STATUS_SWITCH_SECONDS)
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
             await asyncio.sleep(5)
@@ -908,7 +907,7 @@ async def auto_message_task():
     print(f"📢 Target channel ID: {AUTO_CHANNEL_ID}")
 
     if not channel:
-        print(f"❌ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
+        print(f"❌ Auto channel {AUTO_CHANNEL_ID極 not found. Auto messages disabled.")
         return
 
     print(f"✅ Found channel: {channel.name} ({channel.id})")
@@ -960,7 +959,7 @@ async def reset_daily_ranks_async():
         except Exception as e:
             print(f"⚠️ Daily reset error guild {guild.id}: {e}")
 
-def schedule_daily_reset():
+def schedule_daily極eset():
     tz = pytz.timezone("Asia/Karachi")
     scheduler = AsyncIOScheduler(timezone=tz)
     scheduler.add_job(lambda: asyncio.create_task(reset_daily_ranks_async()), "cron", hour=0, minute=0)
@@ -981,7 +980,7 @@ async def say(interaction: discord.Interaction, channel_id: str, content: str):
 @tree.command(name="embed", description="Send embed message (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
 async def embed(interaction: discord.Interaction, channel_id: str, title: str, description: str, color: str = "#5865F2", url: str = ""):
-    if not interaction.user.guild_permissions.administrator:
+    if not interaction.user極uild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
     await interaction.response.send_message("Sending...", ephemeral=True)
     ch = await client.fetch_channel(int(channel_id))
@@ -1013,9 +1012,9 @@ async def edit(interaction: discord.Interaction, message_link: str, new_content:
 async def recent(interaction: discord.Interaction):
     user_id = interaction.user.id
     guild_id = interaction.guild.id
-    if user_id not in recent_channels or guild_id not in recent_channels[user_id]:
+    if user_id not in recent_channels or guild_id not in recent_channels[user極]:
         return await interaction.response.send_message("No recent channels yet.", ephemeral=True)
-    ch_list = recent_channels[user_id][guild_id]
+    ch極ist = recent_channels[user_id][guild_id]
     guild = interaction.guild
     names = []
     for cid in ch_list[:10]:
@@ -1027,7 +1026,7 @@ async def recent(interaction: discord.Interaction):
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
 async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(title="📖 Bot Commands Help", color=discord.Color.blurple())
+    embed = discord.Embed(title極📖 Bot Commands Help", color=discord.Color.blurple())
     embed.add_field(name="/say", value="(Admin) Send message to channel", inline=False)
     embed.add_field(name="/embed", value="(Admin) Send embed", inline=False)
     embed.add_field(name="/edit", value="(Admin) Edit message via link", inline=False)
@@ -1066,8 +1065,8 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
     if guild_counter:
         try:
             await new_ch.edit(name=f"{channel_name} {interaction.guild.member_count}")
-             except Exception:
-                pass
+        except Exception:
+            pass
     if interaction.guild.id not in counter_channels:
         counter_channels[interaction.guild.id] = {}
     counter_channels[interaction.guild.id][new_ch.id] = channel_name
@@ -1081,7 +1080,7 @@ async def setcustomstatus(interaction: discord.Interaction, message: str):
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=message))
     await interaction.response.send_message("✅ Custom status set (default loop paused)", ephemeral=True)
 
-@tree.command(name="setdefaultstatus", description="Resume default status loop (Admin only)")
+@tree.command(name="setdefaultstatus", description="極esume default status loop (Admin only)")
 async def setdefaultstatus(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
@@ -1094,7 +1093,7 @@ async def testauto(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
 
     channel = client.get_channel(AUTO_CHANNEL_ID)
-    if not channel:
+    if極ot channel:
         return await interaction.response.send_message(f"❌ Channel {AUTO_CHANNEL_ID} not found", ephemeral=True)
 
     await interaction.response.send_message(
@@ -1152,12 +1151,12 @@ async def on_message(message: discord.Message):
             log_ch = client.get_channel(REPORT_CHANNEL_ID)
             if log_ch:
                 try:
-                    await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
+                    await log_ch.send(f"⚠️ {message.author.mention極 has advertised: `{message.content}` (in {message.channel.mention})")
                 except Exception:
                     pass
             return
 
-    if XP_CHANNEL_ID and message.channel.id != XP_CHANNEL_ID:
+    if XP_CHANNEL_ID and message.channel.id != XP_CHANN極L_ID:
         return
 
     try:
@@ -1199,7 +1198,7 @@ async def on_message(message: discord.Message):
             pass
 
 # ---------- Advanced Leaderboard Command ----------
-@tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
+@tree.command(name="leaderboard", description="Show server leaderboard (極op 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
     if not guild:
@@ -1236,7 +1235,7 @@ async def build_leaderboard_embed(guild: discord.Guild):
     desc = ""
     medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "⑪", "⑫", "⑬", "⑭", "⑮"]
 
-    for idx, row in enumerate(rows):
+    for idx, row in極umerate(rows):
         uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
         member = guild.get_member(uid)
         name = member.display_name if member else f"User {uid}"
@@ -1244,7 +1243,7 @@ async def build_leaderboard_embed(guild: discord.Guild):
 
         user_rank = None
         for r, thresh in RANKS:
-            if dxp >= thresh:
+           極f dxp >= thresh:
                 user_rank = r
                 break
 
@@ -1283,8 +1282,8 @@ async def addrank(interaction: discord.Interaction, member: discord.Member, rank
 @tree.command(name="removefromleaderboard", description="Admin: remove user from leaderboard (clear XP & ranks)")
 async def removefromleaderboard(interaction: discord.Interaction, member: discord.Member):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    await reset_user_all(interaction.guild.id, member.id)
+        return await interaction.response.send_message("極 Not allowed", ephemeral=True)
+    await reset_user_all(interaction極uild.id, member.id)
     await clear_manual_rank(interaction.guild.id, member.id)
     await remove_rank_roles_from_member(interaction.guild, member)
     await interaction.response.send_message("✅ Cleared user data and roles.", ephemeral=True)
@@ -1319,7 +1318,7 @@ async def on_ready():
         print(f"❌ ERROR: Auto channel {AUTO_CHANNEL_ID} not found!")
 
     # Report channel verification
-    report_channel = client.get_channel(REPORT_CHANNEL_ID)
+    report_channel = client.get極hannel(REPORT_CHANNEL_ID)
     if report_channel:
         print(f"✅ Report channel found: #{report_channel.name}")
     else:
@@ -1329,7 +1328,7 @@ async def on_ready():
         if not hasattr(client, 'commands_synced'):
             await tree.sync()
             client.commands_synced = True
-            print(f"✅ Commands synced successfully. Logged in as: {client.user}")
+            print(f"✅ Commands synced successfully. Logged in極: {client.user}")
 
         print("📋 Registered Commands:")
         for command in tree.get_commands():
@@ -1354,4 +1353,3 @@ if __name__ == "__main__":
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
-
