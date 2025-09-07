@@ -172,7 +172,7 @@ except Exception as e:
     print(f"⚠️ Error loading badwords.txt: {e}")
 
 # ---------- Autocomplete helpers ----------
-async def channel_autocomplete(interaction: discord.InterInteraction, current: str):
+async def channel_autocomplete(interaction: discord.Interaction, current: str):
     choices = []
     guild = interaction.guild
     if not guild:
@@ -1091,3 +1091,4 @@ if __name__ == "__main__":
         client.run(TOKEN)
     except Exception as e:
         print(f"❌ Critical error in client run: {e}")
+
