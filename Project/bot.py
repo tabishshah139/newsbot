@@ -1,4 +1,4 @@
-# bot.py — Final Version (Rank Align + Rounded Leaderboard + 2h AutoMsg)
+# bot.py — Final Fixed Version (with init_db)
 import os
 import re
 import json
@@ -64,9 +64,15 @@ AUTO_MESSAGES = []
 db_pool: Pool = None
 leaderboard_cache = {}
 
+# ---------- Database Init ----------
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    print("✅ Database connected")
+
 # ---------------------------------------------------------
 # Database helpers, XP functions, rank role logic, etc.
-# (yahan sab wo hi rahega jo tumhare final bot.py me tha)
+# (same as tumhare base code me tha)
 # ---------------------------------------------------------
 
 # ---------- Utility: Rounded Avatar ----------
