@@ -23,7 +23,7 @@ XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 900 # Changed to 15 minutes (900 seconds)
+AUTO_INTERVAL = 7200 # Changed to 15 minutes (900 seconds)
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
@@ -1011,3 +1011,4 @@ if __name__ == "__main__":
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
     client.run(TOKEN)
+
