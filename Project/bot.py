@@ -427,25 +427,36 @@ async def status_loop():
             target_guild = client.get_guild(gid)
         except Exception:
             target_guild = None
+    
+    status_index = 0
     while not client.is_closed():
         try:
             guild = target_guild or (client.guilds[0] if client.guilds else None)
             if not guild:
                 await asyncio.sleep(5)
                 continue
+            
             if custom_status.get(guild.id):
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=custom_status[guild.id]))
                 await asyncio.sleep(STATUS_SWITCH_SECONDS)
                 continue
-            count = guild.member_count
-            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Total: {count} Members"))
-            await asyncio.sleep(STATUS_SWITCH_SECONDS)
-            last = last_joined_member.get(guild.id)
-            if last:
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
+            
+            # Rotate through different statuses
+            if status_index % 3 == 0:
+                count = guild.member_count
+                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Members: {count}"))
+            elif status_index % 3 == 1:
+                last = last_joined_member.get(guild.id)
+                if last:
+                    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
+                else:
+                    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Active & Online"))
             else:
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Waiting for New Member"))
+                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="the leaderboard"))
+            
+            status_index += 1
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
+            
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
             await asyncio.sleep(5)
@@ -486,12 +497,16 @@ async def auto_message_task():
 
     print(f"✅ Found channel: #{channel.name} ({channel.id})")
 
+    last_reload_time = 0
+    
     while not client.is_closed():
         try:
-            # Reload messages every 6 hours
-            if AUTO_FILE_URL and int(time.time()) % 21600 == 0:
+            # Reload messages every 6 hours (21600 seconds)
+            current_time = time.time()
+            if AUTO_FILE_URL and (current_time - last_reload_time) >= 21600:
                 print("🔄 Reloading messages from URL...")
                 await load_auto_messages_from_url()
+                last_reload_time = current_time
 
             if AUTO_MESSAGES:
                 msg = random.choice(AUTO_MESSAGES)
@@ -610,8 +625,8 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/leaderboard", value="Show Top20 by 24h XP", inline=False)
     embed.add_field(name="/rank", value="Show your rank, level & XP", inline=False)
     embed.add_field(name="/addrank", value="(Admin) Force rank to user", inline=False)
-    embed.add_field(name="/removefromleaderboard", value="(Admin) Remove user from leaderboard", inline=False)
-    embed.add_field(name="/resetleaderboard", value="(Admin) Reset entire leaderboard", inline=False)
+    embed.add_field(name="/removefromleaderboard", value="(Admin) Remove user from leaderboard (clear XP & ranks)", inline=False)
+    embed.add_field(name="/resetleaderboard", value="(Admin) Reset entire leaderboard (clear all XP & ranks)", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="purge", description="Delete messages (Admin only)")
@@ -909,10 +924,6 @@ async def build_leaderboard_embed(guild: discord.Guild):
         # Show rank name instead of just emoji
         rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
 
-        # Add user avatar with rounded border using Discord's CDN parameters
-        avatar_url = member.display_avatar.url if member else "https://cdn.discordapp.com/embed/avatars/0.png"
-        avatar_url = f"{avatar_url}?size=64"  # Add size parameter for consistent sizing
-        
         desc += f"{medal} **{name}**\n"
         desc += f" {rank_display} • ⭐ {dxp} XP (24h) • 📈 Lv {lvl}\n\n"
 
@@ -1014,4 +1025,9 @@ if __name__ == "__main__":
         raise RuntimeError("DISCORD_TOKEN missing — set it in Railway variables.")
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing — add PostgreSQL database in Railway.")
-    client.run(TOKEN)
+    
+    # Add error handling for client run
+    try:
+        client.run(TOKEN)
+    except Exception as e:
+        print(f"❌ Critical error in client run: {e}")
