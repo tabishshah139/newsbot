@@ -28,7 +28,7 @@ XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 900  # Changed to 15 minutes (900 seconds)
+AUTO_INTERVAL = 900  # 15 minutes
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 10
 COUNTER_UPDATE_SECONDS = 5
@@ -39,13 +39,14 @@ REPORT_CHANNEL_ID = 1412325934291484692  # Hardcoded report channel
 RANKS = [("S+", 500), ("A", 400), ("B", 300), ("C", 200), ("D", 125), ("E", 50)]
 RANK_ORDER = [r[0] for r in RANKS]
 RANK_EMOJIS = {"S+": "🌟", "A": "🔥", "B": "⭐", "C": "💫", "D": "✨", "E": "🔶"}
-RANK_COLORS = {
-    "S+": discord.Color.gold(),
-    "A": discord.Color.red(),
-    "B": discord.Color.orange(),
-    "C": discord.Color.blue(),
-    "D": discord.Color.green(),
-    "E": discord.Color.light_grey()
+# color integers for embed (useable by discord.Color)
+RANK_COLOR_HEX = {
+    "S+": 0xFFD700,  # gold
+    "A": 0xFF4500,   # orange/red
+    "B": 0xFFA500,   # orange
+    "C": 0x1E90FF,   # dodgerblue
+    "D": 0x2ECC71,   # green
+    "E": 0x95A5A6    # light grey
 }
 ROLE_PREFIX = "Rank "
 
@@ -280,7 +281,7 @@ async def send_rank_up_notification(member: discord.Member, old_rank: str, new_r
             embed = discord.Embed(
                 title=f"🏆 RANK PROMOTION 🏆",
                 description=f"## {member.mention} has been promoted to {rank_emoji} **{new_rank} Rank**!",
-                color=RANK_COLORS.get(new_rank, discord.Color.blue()),
+                color=discord.Color(RANK_COLOR_HEX.get(new_rank, 0x5865F2)),
                 timestamp=datetime.now(timezone.utc)
             )
 
@@ -377,7 +378,7 @@ async def get_or_create_role(guild: discord.Guild, rank_name: str):
         role = await guild.create_role(
             name=role_name,
             reason="Auto-created rank role",
-            color=RANK_COLORS.get(rank_name, discord.Color.default())
+            color=discord.Color(RANK_COLOR_HEX.get(rank_name, 0))
         )
         return role
     except Exception as e:
@@ -504,7 +505,7 @@ async def auto_message_task():
 
             if AUTO_MESSAGES:
                 msg = random.choice(AUTO_MESSAGES)
-                print(f"📤 Sending message: {msg[:50]}...") # First 50 chars
+                print(f"📤 Sending message: {msg[:50]}...")  # First 50 chars
                 await channel.send(msg)
                 print("✅ Message sent successfully")
             else:
@@ -549,7 +550,7 @@ def schedule_daily_reset():
     scheduler.start()
     print("✅ Scheduled daily reset (00:00 Asia/Karachi)")
 
-# ---------- SLASH COMMANDS ----------
+# ---------- SLASH COMMANDS (ADMIN / MISC as before) ----------
 @tree.command(name="say", description="Send formatted message to a channel (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
 async def say(interaction: discord.Interaction, channel_id: str, content: str):
@@ -616,7 +617,7 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/recent", value="Show your recent channels", inline=False)
     embed.add_field(name="/purge", value="(Admin) Delete messages", inline=False)
     embed.add_field(name="/setcounter", value="(Admin) Create live counter channel", inline=False)
-    embed.add_field(name="/leaderboard", value="Show Top (image) leaderboard", inline=False)
+    embed.add_field(name="/leaderboard", value="Show Top 10 by 24h XP (embed)", inline=False)
     embed.add_field(name="/rank", value="Show your rank (image card)", inline=False)
     embed.add_field(name="/addrank", value="(Admin) Force rank to user", inline=False)
     embed.add_field(name="/removefromleaderboard", value="(Admin) Remove user from leaderboard", inline=False)
@@ -688,7 +689,7 @@ async def testauto(interaction: discord.Interaction):
         ephemeral=True
     )
 
-# ---------- MESSAGE FILTER + XP tracking (FIXED FOR ADMINS) ----------
+# ---------- MESSAGE FILTER + XP tracking ----------
 @client.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
@@ -780,9 +781,7 @@ async def on_message(message: discord.Message):
         except Exception:
             pass
 
-# ---------- IMAGE CARD GENERATORS (Rank & Leaderboard) ----------
-# Uses fonts from fonts/ directory: Montserrat-Bold.ttf, Montserrat-Regular.ttf, Montserrat-Light.ttf
-
+# ---------- IMAGE CARD GENERATOR FOR /rank ----------
 def _load_font_safe(path: str, size: int):
     try:
         return ImageFont.truetype(path, size)
@@ -830,7 +829,7 @@ async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_
     base.paste(bg, (0, 0))
 
     # glass overlay + blur
-    glass = Image.new("RGBA", (W, H), (255, 255, 255, 40))
+    glass = Image.new("RGBA", (W, H), (255, 255, 255, 36))
     glass = glass.filter(ImageFilter.GaussianBlur(10))
     base = Image.alpha_composite(base, glass)
 
@@ -851,14 +850,14 @@ async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_
             ImageDraw.Draw(mask).ellipse((0, 0, av_size, av_size), fill=255)
             base.paste(avatar, (60, 80), mask)
             # subtle border
-            draw.ellipse((56, 76, 60 + av_size, 80 + av_size), outline=(255,255,255,60), width=3)
+            draw.ellipse((56, 76, 60 + av_size, 80 + av_size), outline=(255,255,255,60), width=4)
         except Exception:
             avatar_bytes = None
 
     if not avatar_bytes:
         # draw placeholder circle
         draw.ellipse((60, 80, 60 + av_size, 80 + av_size), fill=(110, 110, 120, 255))
-        draw.text((60 + 40, 80 + av_size//2 - 10), "No\nAvatar", fill=(230,230,230), anchor="mm")
+        draw.text((60 + av_size//2, 80 + av_size//2), "No\nAvatar", fill=(230,230,230), anchor="mm")
 
     # fonts
     font_bold = _load_font_safe("fonts/Montserrat-Bold.ttf", 36)
@@ -884,20 +883,16 @@ async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_
     # filled gradient
     fill_w = int(pb_w * progress_ratio)
     if fill_w > 0:
+        # draw gradient fill
         for i in range(fill_w):
             t = i / max(1, fill_w)
-            # left green -> right cyan-ish
-            r = int(80 + (46 - 80) * t)
-            g = int(220 + (204 - 220) * t)
-            b = int(140 + (113 - 140) * t)
+            # left green -> right cyan-ish (subtle)
+            r = int(46 + (80 - 46) * (1 - t))
+            g = int(204 + (220 - 204) * t)
+            b = int(113 + (140 - 113) * t)
             draw.line([(pb_x1 + i, pb_y1), (pb_x1 + i, pb_y1 + pb_h)], fill=(r, g, b))
     # progress text
-    prog_text = f"{xp_in_level}/{xp_needed} XP  ({int(progress_ratio*100)}%)" if 'xp_in_level' in locals() else f"{xp_in_level}/{xp_needed} XP  ({int(progress_ratio*100)}%)"
-    # compute xp_in_level variable properly:
-    try:
-        xp_in_level = xp_in_level
-    except Exception:
-        xp_in_level = total_xp - current_total
+    prog_text = f"{xp_in_level}/{xp_needed} XP  ({int(progress_ratio*100)}%)"
     w, h = draw.textsize(prog_text, font=font_light)
     draw.text((pb_x2 - w - 12, pb_y1 + (pb_h - h)//2), prog_text, font=font_light, fill=(20,20,20,230))
 
@@ -911,107 +906,7 @@ async def generate_rank_card_image(member: discord.Member, total_xp: int, daily_
     buffer.seek(0)
     return buffer
 
-async def generate_leaderboard_card_image(guild: discord.Guild, entries: list):
-    # entries: list of dicts {member, total_xp, daily_xp, level}
-    count = max(1, len(entries))
-    W = 1100
-    entry_h = 86
-    H = 140 + count * entry_h
-
-    # load background
-    bg_path = "assets/bg.png"
-    try:
-        bg = Image.open(bg_path).convert("RGBA").resize((W, H))
-    except Exception:
-        bg = Image.new("RGBA", (W, H), (18, 24, 40, 255))
-        draw_tmp = ImageDraw.Draw(bg)
-        for i in range(W):
-            t = i / W
-            r = int(18 + (60 - 18) * t)
-            g = int(24 + (80 - 24) * t)
-            b = int(40 + (140 - 40) * t)
-            draw_tmp.line([(i, 0), (i, 120)], fill=(r,g,b))
-
-    base = Image.new("RGBA", (W, H))
-    base.paste(bg, (0,0))
-
-    # overlay
-    overlay = Image.new("RGBA", (W, H), (255,255,255,20))
-    overlay = overlay.filter(ImageFilter.GaussianBlur(6))
-    base = Image.alpha_composite(base, overlay)
-    draw = ImageDraw.Draw(base)
-
-    title_font = _load_font_safe("fonts/Montserrat-Bold.ttf", 36)
-    sub_font = _load_font_safe("fonts/Montserrat-Regular.ttf", 22)
-    small_font = _load_font_safe("fonts/Montserrat-Light.ttf", 18)
-
-    # Title
-    draw.text((28, 20), f"🏆 {guild.name} — Top {len(entries)} Leaderboard", font=title_font, fill=(255,255,255,255))
-
-    # Rows
-    y = 120
-    for idx, ent in enumerate(entries, start=1):
-        member = ent.get("member")
-        lvl = ent.get("level")
-        daily = ent.get("daily_xp") or 0
-        total = ent.get("total_xp") or 0
-
-        # avatar
-        av_size = 64
-        av_x = 40
-        av_y = y
-        avatar_bytes = None
-        if member:
-            avatar_bytes = await _fetch_avatar_bytes(member.display_avatar.url)
-        if avatar_bytes:
-            try:
-                avatar = Image.open(BytesIO(avatar_bytes)).convert("RGBA").resize((av_size, av_size))
-                mask = Image.new("L", (av_size, av_size), 0)
-                ImageDraw.Draw(mask).ellipse((0,0,av_size,av_size), fill=255)
-                base.paste(avatar, (av_x, av_y), mask)
-            except Exception:
-                draw.ellipse((av_x, av_y, av_x+av_size, av_y+av_size), fill=(80,80,100,255))
-        else:
-            draw.ellipse((av_x, av_y, av_x+av_size, av_y+av_size), fill=(80,80,100,255))
-
-        # medal/position
-        medal_x = av_x + av_size + 18
-        if idx == 1:
-            medal_text = "🥇"
-            color = (255, 215, 0)
-        elif idx == 2:
-            medal_text = "🥈"
-            color = (192, 192, 192)
-        elif idx == 3:
-            medal_text = "🥉"
-            color = (205, 127, 50)
-        else:
-            medal_text = f"#{idx}"
-            color = (230, 230, 230)
-
-        draw.text((medal_x, y+6), medal_text, font=_load_font_safe("fonts/Montserrat-Bold.ttf", 26), fill=color)
-
-        # name and info
-        name_x = medal_x + 70
-        name_str = member.display_name if member else f"User {ent.get('user_id')}"
-        draw.text((name_x, y+4), name_str, font=_load_font_safe("fonts/Montserrat-Bold.ttf", 22), fill=(255,255,255,255))
-
-        rank_name = await get_manual_rank(guild.id, member.id) if member else None
-        if not rank_name:
-            rank_name = get_rank_name_from_daily(daily) or "No Rank"
-
-        draw.text((name_x, y+34), f"Lvl {lvl} • {daily} XP (24h) • {rank_name} • Total {total} XP", font=sub_font, fill=(200,200,200,220))
-
-        # separator
-        draw.line([(28, y+entry_h-6), (W-28, y+entry_h-6)], fill=(255,255,255,8))
-        y += entry_h
-
-    buffer = BytesIO()
-    base.convert("RGBA").save(buffer, "PNG")
-    buffer.seek(0)
-    return buffer
-
-# ---------- Enhanced Rank Command (REPLACED with image only) ----------
+# ---------- /rank command (image card) ----------
 @tree.command(name="rank", description="Show your rank and level")
 async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
     await interaction.response.defer()  # give bot time to build image
@@ -1044,11 +939,23 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         daily_xp = 0
         rank_position = 0
 
-    buffer = await generate_rank_card_image(member, total_xp, daily_xp, rank_position)
-    file = discord.File(fp=buffer, filename="rank_card.png")
-    await interaction.followup.send(file=file)
+    try:
+        buffer = await generate_rank_card_image(member, total_xp, daily_xp, rank_position)
+        file = discord.File(fp=buffer, filename="rank_card.png")
+        await interaction.followup.send(file=file)
+    except Exception as e:
+        print("❌ Error generating rank card:", e)
+        # fallback text response
+        embed = discord.Embed(title=f"{member.display_name}'s Rank", color=discord.Color.blurple())
+        lvl = compute_level_from_total_xp(total_xp)
+        embed.add_field(name="Level", value=str(lvl), inline=True)
+        rankname = await get_manual_rank(interaction.guild.id, member.id) or get_rank_name_from_daily(daily_xp) or "No Rank"
+        embed.add_field(name="Rank", value=rankname, inline=True)
+        embed.add_field(name="24h XP", value=str(daily_xp), inline=True)
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed)
 
-# ---------- Advanced Leaderboard Command (REPLACED with Top 10 image only) ----------
+# ---------- /leaderboard command (advanced embed) ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 10 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -1058,12 +965,12 @@ async def leaderboard(interaction: discord.Interaction):
 
     now_ts = time.time()
     cache = leaderboard_cache.get(guild.id)
-    if cache and now_ts - cache[0] < 60:
-        # cached image buffer -> send cached file
-        buf = cache[1]
-        buf.seek(0)
-        file = discord.File(fp=buf, filename="leaderboard.png")
-        return await interaction.followup.send(file=file)
+    if cache and now_ts - cache[0] < 30:
+        # cached embed -> send it (we stored the embed object and requester name)
+        cached_embed, cached_footer = cache[1]
+        # update footer to show current requester
+        cached_embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        return await interaction.followup.send(embed=cached_embed)
 
     try:
         async with db_pool.acquire() as conn:
@@ -1078,28 +985,52 @@ async def leaderboard(interaction: discord.Interaction):
         print("⚠️ Error fetching leaderboard:", e)
         return await interaction.followup.send("❌ Failed to fetch leaderboard.", ephemeral=True)
 
-    entries = []
-    for r in rows:
-        uid = r['user_id']
-        daily = r['daily_xp'] or 0
-        total = r['total_xp'] or 0
+    if not rows:
+        embed_empty = discord.Embed(title=f"🏆 {guild.name} — Leaderboard", description="No activity yet. Start chatting to earn XP and climb the leaderboard! 💪", color=discord.Color.gold())
+        embed_empty.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        return await interaction.followup.send(embed=embed_empty)
+
+    # Build stylish embed
+    title = f"🏆 {guild.name} — Top {len(rows)} (24h XP)"
+    embed = discord.Embed(title=title, color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
+    if guild.icon:
+        try:
+            embed.set_thumbnail(url=guild.icon.url)
+        except Exception:
+            pass
+
+    description_lines = []
+    medal_emojis = ["🥇", "🥈", "🥉"]
+    for idx, row in enumerate(rows, start=1):
+        uid = row['user_id']
+        daily = row['daily_xp'] or 0
+        total = row['total_xp'] or 0
         member = guild.get_member(uid)
-        level = compute_level_from_total_xp(total)
-        entries.append({
-            "user_id": uid,
-            "member": member,
-            "daily_xp": daily,
-            "total_xp": total,
-            "level": level
-        })
+        name = member.display_name if member else f"User {uid}"
+        lvl = compute_level_from_total_xp(total)
+        rank_name = None
+        for r, thresh in RANKS:
+            if daily >= thresh:
+                rank_name = r
+                break
+        rank_display = f"{rank_name}" if rank_name else "No Rank"
+        medal = medal_emojis[idx-1] if idx <= 3 else f"#{idx}"
 
-    buffer = await generate_leaderboard_card_image(guild, entries)
-    # cache a copy
-    cache_buf = BytesIO(buffer.getvalue())
-    leaderboard_cache[guild.id] = (now_ts, cache_buf)
+        # make line with some unicode bullets and spacing for visual
+        line = f"**{medal} {name}** — `Lvl {lvl}` • **{rank_display}** • ⭐ `{daily}` (24h) • Total `{total}`"
+        description_lines.append(line)
 
-    file = discord.File(fp=buffer, filename="leaderboard.png")
-    await interaction.followup.send(file=file)
+    embed.description = "\n\n".join(description_lines)
+
+    # Add a "Quick view" field with rank guide and legend
+    rank_guide = " • ".join([f"{RANK_EMOJIS.get(r,'')} {r}" for r,_ in RANKS])
+    embed.add_field(name="Ranks Guide", value=rank_guide, inline=False)
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+
+    # store in cache (embed object & requester) for short time
+    leaderboard_cache[guild.id] = (now_ts, (embed, interaction.user.display_name))
+
+    await interaction.followup.send(embed=embed)
 
 # ---------- Admin Rank Commands ----------
 @tree.command(name="addrank", description="Admin: force a rank to a user")
