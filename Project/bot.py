@@ -16,7 +16,7 @@ import aiohttp
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID_ENV = os.getenv("GUID_ID")
+GUILD_ID_ENV = os.getenv("GUILD_ID")
 AUTO_FILE_URL = os.getenv("AUTO_MESSAGES_URL") # GitHub raw URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
@@ -182,7 +182,7 @@ async def channel_autocomplete(interaction: discord.Interaction, current: str):
         for cid in recent_channels[user_id][guild.id][:10]:
             ch = guild.get_channel(cid)
             if ch and current.lower() in ch.name.lower():
-                choices.append(app_commands.Choice(name=f"⭐ {ch.name}", value=str(ch.id)))
+                choices.append(app_commands.Choice(name=f"⭐ {ch.name", value=str(ch.id)))
     for ch in guild.text_channels:
         if current.lower() in ch.name.lower():
             choices.append(app_commands.Choice(name=ch.name, value=str(ch.id)))
@@ -340,6 +340,7 @@ async def reset_all_daily(guild_id: int):
 async def reset_user_all(guild_id: int, user_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
+        await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
 
 async def force_set_manual_rank(guild_id: int, user_id: int, rank_str: str):
     async with db_pool.acquire() as conn:
@@ -562,6 +563,41 @@ def schedule_daily_reset():
     scheduler.start()
     print("✅ Scheduled daily reset (00:00 Asia/Karachi)")
 
+# ---------- Auto Cleanup Left Users ----------
+async def cleanup_left_users():
+    """Remove users who have left the server from database"""
+    for guild in client.guilds:
+        try:
+            async with db_pool.acquire() as conn:
+                # Get all user IDs from database for this guild
+                db_users = await conn.fetch("SELECT user_id FROM users WHERE guild_id=$1", guild.id)
+                db_user_ids = {row['user_id'] for row in db_users}
+                
+                # Get all current member IDs
+                current_member_ids = {member.id for member in guild.members}
+                
+                # Find users who left
+                left_user_ids = db_user_ids - current_member_ids
+                
+                if left_user_ids:
+                    # Remove left users from database
+                    await conn.execute("DELETE FROM users WHERE guild_id=$1 AND user_id = ANY($2::bigint[])", 
+                                     guild.id, list(left_user_ids))
+                    await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1 AND user_id = ANY($2::bigint[])", 
+                                     guild.id, list(left_user_ids))
+                    
+                    print(f"✅ Removed {len(left_user_ids)} left users from database for guild {guild.name}")
+                    
+        except Exception as e:
+            print(f"⚠️ Error cleaning up left users for guild {guild.id}: {e}")
+
+def schedule_user_cleanup():
+    """Schedule automatic user cleanup every hour"""
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(cleanup_left_users, 'interval', hours=1)
+    scheduler.start()
+    print("✅ Scheduled user cleanup (every 1 hour)")
+
 # ---------- SLASH COMMANDS ----------
 @tree.command(name="say", description="Send formatted message to a channel (Admin only)")
 @app_commands.autocomplete(channel_id=channel_autocomplete)
@@ -617,7 +653,7 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Embed(title="📌 Your Recent Channels", description="✧".join(names) if names else "None", color=discord.Color.blue())
+    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
@@ -882,6 +918,9 @@ async def leaderboard(interaction: discord.Interaction):
     if not guild:
         return await interaction.response.send_message("Guild-only.", ephemeral=True)
 
+    # Clean up left users before showing leaderboard
+    await cleanup_left_users()
+    
     now_ts = time.time()
     cache = leaderboard_cache.get(guild.id)
     if cache and now_ts - cache[0] < CACHE_DURATION:
@@ -932,27 +971,10 @@ async def build_leaderboard_embed(guild: discord.Guild):
             rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
             medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
 
-            # Profile picture ke saath user entry
+            # Profile picture ke saath user entry (LEFT SIDE with proper avatar display)
             rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
             
-            desc += f"{medal} [**{name}**]({avatar_url})\n"
-            desc += f"  {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
-        else:
-            # Agar member server mein nahi hai
-            name = f"User {uid}"
-            lvl = compute_level_from_total_xp(txp)
-            
-            user_rank = None
-            for r, thresh in RANKS:
-                if dxp >= thresh:
-                    user_rank = r
-                    break
-
-            rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
-            medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
-
-            rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
-            
+            # Use Discord's embed field with avatar as icon
             desc += f"{medal} **{name}**\n"
             desc += f"  {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
 
@@ -960,6 +982,22 @@ async def build_leaderboard_embed(guild: discord.Guild):
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
 
     embed.description = desc
+
+    # Add avatar images as fields for visual display
+    active_members = 0
+    for idx, row in enumerate(rows):
+        if idx >= 3:  # Only show top 3 avatars
+            break
+            
+        uid = row['user_id']
+        member = guild.get_member(uid)
+        if member:
+            active_members += 1
+            embed.add_field(
+                name=f"🥇 Top {idx+1}" if idx == 0 else f"🥈 Top {idx+1}" if idx == 1 else f"🥉 Top {idx+1}",
+                value=member.mention,
+                inline=True
+            )
 
     rank_guide = " | ".join([f"{RANK_EMOJIS.get(r, '')} {r}" for r in RANK_ORDER])
     embed.set_footer(text=f"Ranks: {rank_guide} | Reset daily at 12:00 AM PKT")
@@ -1043,10 +1081,20 @@ async def on_ready():
     client.loop.create_task(counter_updater())
     client.loop.create_task(auto_message_task())
     schedule_daily_reset()
+    schedule_user_cleanup()
 
 @client.event
 async def on_member_join(member):
     last_joined_member[member.guild.id] = member.name
+
+@client.event
+async def on_member_remove(member):
+    """Automatically remove user from database when they leave"""
+    try:
+        await reset_user_all(member.guild.id, member.id)
+        print(f"✅ Removed {member.name} from database (left server)")
+    except Exception as e:
+        print(f"⚠️ Error removing {member.name} from database: {e}")
 
 # ---------- RUN ----------
 if __name__ == "__main__":
