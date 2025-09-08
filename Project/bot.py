@@ -439,26 +439,44 @@ async def status_loop():
 
             # Custom status check (priority)
             if custom_status.get(guild.id):
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=custom_status[guild.id]))
+                await client.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.playing,
+                        name=custom_status[guild.id]
+                    )
+                )
                 await asyncio.sleep(STATUS_SWITCH_SECONDS)
                 continue
 
-            # 1. Member count status
+            # 1) Member count status
             count = guild.member_count
-            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Total Member: {count}"))
+            await client.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.playing,
+                    name=f"Total Member: {count}"
+                )
+            )
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
 
-            # 2. Welcome recent member status
+            # 2) Welcome recent member status (or waiting)
             last = last_joined_member.get(guild.id)
             if last:
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
+                await client.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.playing,
+                        name=f"Welcome {last}"
+                    )
+                )
             else:
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Waiting for New Member"))
+                await client.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.playing,
+                        name="Waiting for New Member"
+                    )
+                )
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
 
-            # 3. Leaderboard watching status
-            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="the leaderboard"))
-            await asyncio.sleep(STATUS_SWITCH_SECONDS)
+            # NOTE: Removed the third "watching the leaderboard" status as requested.
 
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
@@ -763,7 +781,7 @@ async def on_message(message: discord.Message):
                     new_rank = r
                     break
 
-            current_rank = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
+            _ = await evaluate_and_update_member_rank(message.guild, message.author, new_data['daily_xp'])
 
             if new_level > old_level:
                 await send_level_up_notification(message.author, old_level, new_level)
@@ -788,14 +806,19 @@ async def on_message(message: discord.Message):
                 except Exception:
                     pass
                 try:
-                    await message.channel.send(f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.", delete_after=8)
+                    await message.channel.send(
+                        f"🚫 Hey {message.author.mention}, stop! Do not use offensive language. Continued violations may lead to a ban.",
+                        delete_after=8
+                    )
                 except Exception:
                     pass
 
                 log_ch = client.get_channel(REPORT_CHANNEL_ID)
                 if log_ch:
                     try:
-                        await log_ch.send(f"⚠️ {message.author.mention} has misbehaved and used: **{bad}** (in {message.channel.mention})")
+                        await log_ch.send(
+                            f"⚠️ {message.author.mention} has misbehaved and used: **{bad}** (in {message.channel.mention})"
+                        )
                     except Exception:
                         pass
                 return
@@ -806,14 +829,19 @@ async def on_message(message: discord.Message):
             except Exception:
                 pass
             try:
-                await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete_after=8)
+                await message.channel.send(
+                    f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.",
+                    delete_after=8
+                )
             except Exception:
                 pass
 
             log_ch = client.get_channel(REPORT_CHANNEL_ID)
             if log_ch:
                 try:
-                    await log_ch.send(f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})")
+                    await log_ch.send(
+                        f"⚠️ {message.author.mention} has advertised: `{message.content}` (in {message.channel.mention})"
+                    )
                 except Exception:
                     pass
             return
@@ -949,7 +977,6 @@ async def build_leaderboard_embed(guild: discord.Guild):
         member = guild.get_member(uid)
 
         if member:
-            name = member.display_name
             lvl = compute_level_from_total_xp(txp)
 
             user_rank = None
@@ -982,7 +1009,9 @@ async def addrank(interaction: discord.Interaction, member: discord.Member, rank
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
     rank = rank.strip()
     if rank not in RANK_ORDER:
-        return await interaction.response.send_message(f"❌ Invalid rank. Choose from: {', '.join(RANK_ORDER)}", ephemeral=True)
+        return await interaction.response.send_message(
+            f"❌ Invalid rank. Choose from: {', '.join(RANK_ORDER)}", ephemeral=True
+        )
     await force_set_manual_rank(interaction.guild.id, member.id, rank)
     await remove_rank_roles_from_member(interaction.guild, member)
     await assign_rank_role_for_member(interaction.guild, member, rank)
