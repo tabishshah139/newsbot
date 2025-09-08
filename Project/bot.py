@@ -446,7 +446,7 @@ async def status_loop():
             # ✅ APKA ORIGINAL STATUS LOOP WAPIS
             # 1. Member count status
             count = guild.member_count
-            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Members: {count}"))
+            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Total Member: {count}"))
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
             
             # 2. Welcome recent member status
@@ -454,7 +454,7 @@ async def status_loop():
             if last:
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
             else:
-                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Active & Online"))
+                await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Waiting for New Member"))
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
             
             # 3. Leaderboard watching status
@@ -655,12 +655,12 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
+    embed = discord.Embed(title="📌 Your Recent Channels", description="✧".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
 async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(title="📖 Bot Commands Help", color=discord.Color.blurple())
+    embed = discord.Emembed(title="📖 Bot Commands Help", color=discord.Color.blurple())
     embed.add_field(name="/say", value="(Admin) Send message to channel", inline=False)
     embed.add_field(name="/embed", value="(Admin) Send embed", inline=False)
     embed.add_field(name="/edit", value="(Admin) Edit message via link", inline=False)
@@ -917,7 +917,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
 
     await interaction.response.send_message(embed=embed)
 
-# ---------- Fixed Leaderboard Command (No Duplication) ----------
+# ---------- Enhanced Leaderboard Command with Profile Pictures ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
@@ -960,6 +960,8 @@ async def build_leaderboard_embed(guild: discord.Guild):
         member = guild.get_member(uid)
         
         if member:
+            # User ke profile picture ka URL (without rounded borders)
+            avatar_url = member.display_avatar.replace(size=64, format='png').url
             name = member.display_name
             lvl = compute_level_from_total_xp(txp)
 
@@ -972,16 +974,15 @@ async def build_leaderboard_embed(guild: discord.Guild):
             rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
             medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
 
-            # Sirf ek entry dikhao - Top 3 ke liye medal, baaki ke liye number
-            rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
-            desc += f"{medal} **{name}** - {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
+            # Profile picture ke saath user entry
+            desc += f"{medal} []({avatar_url}) **{name}**\n"
+            desc += f"  {rank_emoji} {user_rank if user_rank else 'No Rank'} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
 
     if not desc:
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
 
     embed.description = desc
 
-    # Top 3 members ko alag se fields mein na dikhao (yehi duplication cause kar raha tha)
     rank_guide = " | ".join([f"{RANK_EMOJIS.get(r, '')} {r}" for r in RANK_ORDER])
     embed.set_footer(text=f"Ranks: {rank_guide} | Reset daily at 12:00 AM PKT")
 
@@ -1091,4 +1092,3 @@ if __name__ == "__main__":
         client.run(TOKEN)
     except Exception as e:
         print(f"❌ Critical error in client run: {e}")
-
