@@ -437,46 +437,34 @@ async def status_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # Custom status check (priority)
+            # Agar custom status set hai to use hi dikhaye
             if custom_status.get(guild.id):
                 await client.change_presence(
-                    activity=discord.Activity(
-                        type=discord.ActivityType.playing,
-                        name=custom_status[guild.id]
-                    )
+                    activity=discord.CustomActivity(name=custom_status[guild.id])
                 )
                 await asyncio.sleep(STATUS_SWITCH_SECONDS)
                 continue
 
-            # 1) Member count status
+            # 1) Member count status (Playing prefix removed)
             count = guild.member_count
             await client.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.playing,
-                    name=f"Total Member: {count}"
-                )
+                activity=discord.CustomActivity(name=f"Total Member: {count}")
             )
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
 
-            # 2) Welcome recent member status (or waiting)
+            # 2) Welcome recent member / waiting status (Playing prefix removed)
             last = last_joined_member.get(guild.id)
             if last:
                 await client.change_presence(
-                    activity=discord.Activity(
-                        type=discord.ActivityType.playing,
-                        name=f"Welcome {last}"
-                    )
+                    activity=discord.CustomActivity(name=f"Welcome {last}")
                 )
             else:
                 await client.change_presence(
-                    activity=discord.Activity(
-                        type=discord.ActivityType.playing,
-                        name="Waiting for New Member"
-                    )
+                    activity=discord.CustomActivity(name="Waiting for New Member")
                 )
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
 
-            # NOTE: Removed the third "watching the leaderboard" status as requested.
+            # (Note: 'Watching the leaderboard' status already removed earlier)
 
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
@@ -681,7 +669,7 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="/rank", value="Show your rank, level & XP", inline=False)
     embed.add_field(name="/addrank", value="(Admin) Force rank to user", inline=False)
     embed.add_field(name="/removefromleaderboard", value="(Admin) Remove user from leaderboard (clear XP & ranks)", inline=False)
-    embed.add_field(name="/resetleaderboard", value="(Admin) Reset entire leaderboard (clear all XP & ranks)", inline=False)
+    embed.add_field(name="/resetleaderboard", value="(Admin) Reset entire guild leaderboard (clear all XP & ranks)", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="purge", description="Delete messages (Admin only)")
@@ -720,8 +708,9 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
 async def setcustomstatus(interaction: discord.Interaction, message: str):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    custom_status[interaction.guild.id] = message
+    # Note: Admin-set custom status yahan abhi 'Playing' ke saath hi rahega (as-is). 
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=message))
+    custom_status[interaction.guild.id] = message
     await interaction.response.send_message("✅ Custom status set (default loop paused)", ephemeral=True)
 
 @tree.command(name="setdefaultstatus", description="Resume default status loop (Admin only)")
