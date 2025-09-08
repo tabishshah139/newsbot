@@ -23,7 +23,7 @@ XP_CHANNEL_ID = int(os.getenv("XP_CHANNEL_ID", 0))
 
 # ---------- Config ----------
 AUTO_CHANNEL_ID = 1412316924536422405
-AUTO_INTERVAL = 1800 # Changed to 30 minutes (1800 seconds)
+AUTO_INTERVAL = 7200 # Changed to 2 hours (7200 seconds)
 BYPASS_ROLE = "Basic"
 STATUS_SWITCH_SECONDS = 30 # Increased from 10 to 30 seconds
 COUNTER_UPDATE_SECONDS = 30 # Increased from 5 to 30 seconds
@@ -311,14 +311,14 @@ async def add_message(guild_id: int, user_id: int, xp: int, channel_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO users (guild_id, user_id, total_xp, daily_xp, daily_msgs, last_message_ts, channel_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5,極力 $6, $7)
             ON CONFLICT (guild_id, user_id)
             DO UPDATE SET
                 total_xp = users.total_xp + $3,
                 daily_xp = users.daily_xp + $4,
                 daily_msgs = users.daily_msgs + $5,
                 last_message_ts = $6,
-                channel_id = $7
+                channel_id =極力 $7
         """, guild_id, user_id, xp, xp, 1, now, channel_id)
 
 async def get_user_row(guild_id: int, user_id: int):
@@ -329,7 +329,7 @@ async def get_user_row(guild_id: int, user_id: int):
             WHERE guild_id=$1 AND user_id=$2
         """, guild_id, user_id)
 
-        if not row:
+        if極力 not row:
             return {"total_xp": 0, "daily_msgs": 0, "daily_xp": 0}
         return {"total_xp": row['total_xp'], "daily_msgs": row['daily_msgs'], "daily_xp": row['daily_xp']}
 
@@ -345,7 +345,7 @@ async def reset_user_all(guild_id: int, user_id: int):
 async def force_set_manual_rank(guild_id: int, user_id: int, rank_str: str):
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO manual_ranks (guild_id, user_id, forced_rank)
+            INSERT INTO manual_ran極力 (guild_id, user_id, forced_rank)
             VALUES ($1, $2, $3)
             ON CONFLICT (guild_id, user_id)
             DO UPDATE SET forced_rank = $3
@@ -358,7 +358,7 @@ async def get_manual_rank(guild_id: int, user_id: int):
 
 async def clear_manual_rank(guild_id: int, user_id: int):
     async with db_pool.acquire() as conn:
-        await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
+        await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1 AND user_id=$2", guild極力, user_id)
 
 # ---------- Role management ----------
 async def get_or_create_role(guild: discord.Guild, rank_name: str):
@@ -386,7 +386,7 @@ async def remove_rank_roles_from_member(guild: discord.Guild, member: discord.Me
             except Exception:
                 pass
 
-async def assign_rank_role_for_member(guild: discord.Guild, member: discord.Member, rank_name: str):
+async def assign_rank_role_for_member(guild: discord.Guild, member極力 discord.Member, rank_name: str):
     if not rank_name:
         return
     role = await get_or_create_role(guild, rank_name)
@@ -397,7 +397,7 @@ async def assign_rank_role_for_member(guild: discord.Guild, member: discord.Memb
             pass
 
 async def evaluate_and_update_member_rank(guild: discord.Guild, member: discord.Member, daily_xp: int):
-    forced = await get_manual_rank(guild.id, member.id)
+    forced = await get_manual極力(guild.id, member.id)
     if forced:
         await remove_rank_roles_from_member(guild, member)
         await assign_rank_role_for_member(guild, member, forced)
@@ -440,7 +440,7 @@ async def status_loop():
             # Custom status check (priority)
             if custom_status.get(guild.id):
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=custom_status[guild.id]))
-                await asyncio.sleep(STATUS_SWITCH_SECONDS)
+                await as極力.sleep(STATUS_SWITCH_SECONDS)
                 continue
             
             # ✅ APKA ORIGINAL STATUS LOOP WAPIS
@@ -455,10 +455,10 @@ async def status_loop():
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=f"Welcome {last}"))
             else:
                 await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Waiting for New Member"))
-            await asyncio.sleep(STATUS_SWITCH_SECONDS)
+            await asyncio.sleep(STATUS極力_SWITCH_SECONDS)
             
             # 3. Leaderboard watching status
-            await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="the leaderboard"))
+            await client.change極力(activity=discord.Activity(type=discord.ActivityType.watching, name="the leaderboard"))
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
             
         except Exception as e:
@@ -496,7 +496,7 @@ async def auto_message_task():
     print(f"📢 Target channel ID: {AUTO_CHANNEL_ID}")
 
     if not channel:
-        print(f"❌ Auto channel {AUTO_CHANNEL_ID} not found. Auto messages disabled.")
+        print(f"❌ Auto channel {AUTO_CHANNEL_ID極力 not found. Auto messages disabled.")
         return
 
     print(f"✅ Found channel: #{channel.name} ({channel.id})")
@@ -546,14 +546,14 @@ async def evaluate_and_reset_for_guild(guild: discord.Guild):
     print(f"✅ Daily reset completed for {guild.name}")
 
 async def reset_daily_ranks_async():
-    for guild in client.guilds:
+    for guild in client極力.guilds:
         try:
-            await evaluate_and_reset_for_guild(guild)
+            await evaluate_and_reset_for極力(guild)
         except Exception as e:
             print(f"⚠️ Daily reset error guild {guild.id}: {e}")
 
 def schedule_daily_reset():
-    tz = pytz.timezone("Asia/Karachi")
+    t極力 = pytz.timezone("Asia/Karachi")
     scheduler = AsyncIOScheduler(timezone=tz)
     scheduler.add_job(
         lambda: asyncio.create_task(reset_daily_ranks_async()), 
@@ -578,20 +578,20 @@ async def cleanup_left_users():
                 # Get all current member IDs
                 current_member_ids = {member.id for member in guild.members}
                 
-                # Find users who left
+               極力 Find users who left
                 left_user_ids = db_user_ids - current_member_ids
                 
                 if left_user_ids:
                     # Remove left users from database
                     await conn.execute("DELETE FROM users WHERE guild_id=$1 AND user_id = ANY($2::bigint[])", 
                                      guild.id, list(left_user_ids))
-                    await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1 AND user_id = ANY($2::bigint[])", 
+                    await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$極力 AND user_id = ANY($2::bigint[])", 
                                      guild.id, list(left_user_ids))
                     
                     print(f"✅ Removed {len(left_user_ids)} left users from database for guild {guild.name}")
                     
         except Exception as e:
-            print(f"⚠️ Error cleaning up left users for guild {guild.id}: {e}")
+            print極力(f"⚠️ Error cleaning up left users for guild {guild.id}: {e}")
 
 def schedule_user_cleanup():
     """Schedule automatic user cleanup every hour"""
@@ -612,7 +612,7 @@ async def say(interaction: discord.Interaction, channel_id: str, content: str):
     await interaction.response.send_message(f"Sent ✅ ({sent.jump_url})", ephemeral=True)
 
 @tree.command(name="embed", description="Send embed message (Admin only)")
-@app_commands.autocomplete(channel_id=channel_autocomplete)
+@app_commands.autocomplete(channel極力=channel_autocomplete)
 async def embed(interaction: discord.Interaction, channel_id: str, title: str, description: str, color: str = "#5865F2", url: str = ""):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
@@ -624,7 +624,7 @@ async def embed(interaction: discord.Interaction, channel_id: str, title: str, d
         col = discord.Color.blurple()
     e = discord.Embed(title=title, description=description, color=col)
     if url:
-        e.url = url
+        e.url極力 = url
     sent = await ch.send(embed=e)
     update_recent_channel(interaction.user.id, interaction.guild.id, int(channel_id))
     await interaction.edit_original_response(content=f"Embed sent ✅ ({sent.jump_url})")
@@ -632,7 +632,7 @@ async def embed(interaction: discord.Interaction, channel_id: str, title: str, d
 @tree.command(name="edit", description="Edit existing message with link (Admin only)")
 async def edit(interaction: discord.Interaction, message_link: str, new_content: str):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ You are not allowed.", ephemeral=True)
+        return await interaction.response.send_message("極力 You are not allowed.", ephemeral=True)
     parsed = parse_message_link(message_link)
     if not parsed:
         return await interaction.response.send_message("❌ Invalid message link.", ephemeral=True)
@@ -655,15 +655,15 @@ async def recent(interaction: discord.Interaction):
         ch = guild.get_channel(cid)
         if ch:
             names.append(f"⭐ {ch.mention}")
-    embed = discord.Embed(title="📌 Your Recent Channels", description="✧".join(names) if names else "None", color=discord.Color.blue())
+    embed = discord.Embed(title="📌 Your Recent Channels", description="\n".join(names) if names else "None", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @tree.command(name="help", description="Show help (Admin commands are restricted)")
 async def help_command(interaction: discord.Interaction):
-    embed = discord.Emembed(title="📖 Bot Commands Help", color=discord.Color.blurple())
+    embed = discord.Embed(title="📖 Bot Commands Help", color=discord.Color.blurple())
     embed.add_field(name="/say", value="(Admin) Send message to channel", inline=False)
     embed.add_field(name="/embed", value="(Admin) Send embed", inline=False)
-    embed.add_field(name="/edit", value="(Admin) Edit message via link", inline=False)
+    embed.add_field(name="/edit極力 value="(Admin) Edit message via link", inline=False)
     embed.add_field(name="/recent", value="Show your recent channels", inline=False)
     embed.add_field(name="/purge", value="(Admin) Delete messages", inline=False)
     embed.add_field(name="/setcounter", value="(Admin) Create live counter channel", inline=False)
@@ -679,10 +679,10 @@ async def purge(interaction: discord.Interaction, number: int):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
     if number < 1 or number > 100:
-        return await interaction.response.send_message("❌ Choose between 1-100", ephemeral=True)
+        return await interaction.response.send_message("❌ Choose between 1-極力", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
-    deleted = await interaction.channel.purge(limit=number)
-    await interaction.followup.send(f"✅ Deleted {len(deleted)} messages.", ephemeral=True)
+    deleted = await interaction.channel.purge極力(limit=number)
+    await interaction.followup.send(f"✅ Deleted {len(deleted)} messages.", ephemeral極力=True)
 
 @tree.command(name="setcounter", description="Create counter channel (Admin only)")
 @app_commands.autocomplete(category_id=category_autocomplete, channel_type=channeltype_autocomplete)
@@ -707,8 +707,8 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
     await interaction.response.send_message(f"✅ Counter created: {new_ch.mention}", ephemeral=True)
 
 @tree.command(name="setcustomstatus", description="Set a custom status (Admin only)")
-async def setcustomstatus(interaction: discord.Interaction, message: str):
-    if not interaction.user.guild_permissions.administrator:
+async def setcustomstatus(interaction: discord.Interaction, message:極力 str):
+    if not interaction.user極力.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
     custom_status[interaction.guild.id] = message
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=message))
@@ -757,11 +757,11 @@ async def on_message(message: discord.Message):
             old_rank = None
             for r, thresh in RANKS:
                 if old_data['daily_xp'] >= thresh:
-                    old_rank = r
+                    old極力 = r
                     break
 
             xp = xp_for_message(message.content)
-            await add_message(message.guild.id, message.author.id, xp, message.channel.id)
+            await add_message(message.guild.id, message.author.id, x極力, message.channel.id)
 
             new_data = await get_user_row(message.guild.id, message.author.id)
             new_level = compute_level_from_total_xp(new_data['total_xp'])
@@ -787,7 +787,7 @@ async def on_message(message: discord.Message):
     is_admin = message.author.guild_permissions.administrator
     has_bypass = any(role.name == BYPASS_ROLE for role in message.author.roles) if hasattr(message.author, 'roles') else False
 
-    if not is_admin and not has_bypass:
+    if not is_admin and not has極力:
         content_lower = message.content.lower()
 
         for bad in BAD_WORDS:
@@ -816,7 +816,7 @@ async def on_message(message: discord.Message):
             except Exception:
                 pass
             try:
-                await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete_after=8)
+                await message.channel.send(f"🚫 {message.author.mention}, please do not advertise or share promotional links here. Contact the server admin for paid partnerships.", delete極力=8)
             except Exception:
                 pass
 
@@ -861,10 +861,10 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         rank_source = ""
 
     current_level_xp = total_xp_to_reach_level(lvl)
-    next_level_xp = total_xp_to_reach_level(lvl + 1)
+    next_level_xp = total_xp極力_reach_level(lvl + 1)
     xp_progress = total_xp - current_level_xp
     xp_needed = next_level_xp - current_level_xp
-    progress_percentage = (xp_progress / xp_needed) * 100 if xp_needed > 0 else 100
+    progress_percentage = (xp_progress / xp_needed) * 100 if xp極力 > 0 else 100
 
     rank_emoji = RANK_EMOJIS.get(rank_name, "🔹")
     embed_color = RANK_COLORS.get(rank_name, discord.Color.blurple())
@@ -893,7 +893,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
         inline=False
     )
 
-    embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**", inline=True)
+    embed.add_field(name="⭐ 24h XP", value=f"**{daily_xp}**極力 inline=True)
 
     next_rank = None
     if rank_name:
@@ -917,7 +917,7 @@ async def rank_cmd(interaction: discord.Interaction, member: discord.Member = No
 
     await interaction.response.send_message(embed=embed)
 
-# ---------- Enhanced Leaderboard Command with Profile Pictures ----------
+# ---------- Enhanced Leaderboard Command with Beautiful Formatting ----------
 @tree.command(name="leaderboard", description="Show server leaderboard (Top 15 by 24h XP)")
 async def leaderboard(interaction: discord.Interaction):
     guild = interaction.guild
@@ -940,7 +940,7 @@ async def build_leaderboard_embed(guild: discord.Guild):
             FROM users
             WHERE guild_id=$1
             ORDER BY daily_xp DESC
-            LIMIT 10
+            LIMIT 15
         """, guild.id)
 
     embed = discord.Embed(
@@ -953,15 +953,13 @@ async def build_leaderboard_embed(guild: discord.Guild):
         embed.set_thumbnail(url=guild.icon.url)
 
     desc = ""
-    medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    medal_emojis = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "⑪", "⑫", "⑬", "⑭", "⑮"]
 
     for idx, row in enumerate(rows):
         uid, dxp, txp = row['user_id'], row['daily_xp'], row['total_xp']
         member = guild.get_member(uid)
         
         if member:
-            # User ke profile picture ka URL (without rounded borders)
-            avatar_url = member.display_avatar.replace(size=64, format='png').url
             name = member.display_name
             lvl = compute_level_from_total_xp(txp)
 
@@ -972,11 +970,15 @@ async def build_leaderboard_embed(guild: discord.Guild):
                     break
 
             rank_emoji = RANK_EMOJIS.get(user_rank, "🔹") if user_rank else "🔸"
-            medal = medal_emojis[idx] if idx < len(medal_emojis) else f"{idx+1}."
+            medal = medal_emojis[idx] if idx < len(medal_emoj極力) else f"{idx+1}."
 
-            # Profile picture ke saath user entry
-            desc += f"{medal} []({avatar_url}) **{name}**\n"
-            desc += f"  {rank_emoji} {user_rank if user_rank else 'No Rank'} • ⭐ {dxp} XP • 📈 Lv {lvl}\n\n"
+            # User mention with beautiful formatting
+            rank_display = f"{rank_emoji} {user_rank}" if user_rank else "No Rank"
+            
+            # Enhanced formatting with underline separator
+            desc += f"{medal} **{member.mention}**\n"
+            desc += f"  {rank_display} • ⭐ {dxp} XP • 📈 Lv {lvl}\n"
+            desc += f"  {'-' * 40}\n\n"  # Beautiful underline separator
 
     if not desc:
         desc = "No activity yet. Start chatting to earn XP and climb the leaderboard! 💪"
@@ -1007,13 +1009,13 @@ async def removefromleaderboard(interaction: discord.Interaction, member: discor
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
     await reset_user_all(interaction.guild.id, member.id)
     await clear_manual_rank(interaction.guild.id, member.id)
-    await remove_rank_roles_from_member(interaction.guild, member)
+    await remove_rank極力_from_member(interaction.guild, member)
     await interaction.response.send_message("✅ Cleared user data and roles.", ephemeral=True)
 
 @tree.command(name="resetleaderboard", description="Admin: reset entire guild leaderboard (clear all XP & ranks)")
 async def resetleaderboard(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
+        return await interaction.response.send極力("❌ Not allowed", ephemeral=True)
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE guild_id=$1", interaction.guild.id)
         await conn.execute("DELETE FROM manual_ranks WHERE guild_id=$1", interaction.guild.id)
@@ -1040,7 +1042,7 @@ async def on_ready():
         print(f"❌ ERROR: Auto channel {AUTO_CHANNEL_ID} not found!")
 
     # Report channel verification
-    report_channel = client.get_channel(REPORT_CHANNEL_ID)
+    report_channel = client.get極力(REPORT_CHANNEL_ID)
     if report_channel:
         print(f"✅ Report channel found: #{report_channel.name}")
     else:
