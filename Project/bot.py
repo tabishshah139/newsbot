@@ -437,7 +437,7 @@ async def status_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # Agar custom status set hai to use hi dikhaye
+            # Agar custom status set hai to use hi dikhaye (Playing ke bina)
             if custom_status.get(guild.id):
                 await client.change_presence(
                     activity=discord.CustomActivity(name=custom_status[guild.id])
@@ -464,7 +464,7 @@ async def status_loop():
                 )
             await asyncio.sleep(STATUS_SWITCH_SECONDS)
 
-            # (Note: 'Watching the leaderboard' status already removed earlier)
+            # (Note: 'Watching the leaderboard' status already removed)
 
         except Exception as e:
             print(f"⚠️ status_loop error: {e}")
@@ -708,9 +708,9 @@ async def setcounter(interaction: discord.Interaction, category_id: str, channel
 async def setcustomstatus(interaction: discord.Interaction, message: str):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Not allowed", ephemeral=True)
-    # Note: Admin-set custom status yahan abhi 'Playing' ke saath hi rahega (as-is). 
-    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=message))
+    # Custom status now WITHOUT 'Playing' — plain text
     custom_status[interaction.guild.id] = message
+    await client.change_presence(activity=discord.CustomActivity(name=message))
     await interaction.response.send_message("✅ Custom status set (default loop paused)", ephemeral=True)
 
 @tree.command(name="setdefaultstatus", description="Resume default status loop (Admin only)")
